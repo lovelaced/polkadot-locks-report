@@ -5,50 +5,75 @@ use subxt::{OnlineClient, PolkadotConfig};
 use subxt::utils;
 use std::str::FromStr;
 
-fn process_locks_data(decoded_locks: &DecodedValue) {
-// Navigate to the main array of locks
-if let Some(locks_array) = decoded_locks.at("value").at("value").at(0) {
-    let mut index = 0;
+fn process_locks_data(decoded_locks_data: &DecodedValue) {
+    println!("Starting to process locks...");
 
-    // Iterate over each lock in the locks_array
-    while let Some(lock_data) = locks_array.at(index) {
-        // Extract the "id" which is an array of Value items.
-        if let Some(id_comp) = lock_data.at("id") {
-            let mut char_index = 0;
-            let mut id_str = String::new();
+    if let Some(outer_value) = decoded_locks_data.at(0) {
+        println!("Found the outer value...");
 
-            // Iterate over the ID components and assemble the string
-            while let Some(char_val) = id_comp.at(char_index) {
-                if let Some(val) = char_val.as_u128() {
-                    id_str.push(val as u8 as char); // Convert U128 to char
+        let mut index = 0;
+        const MAX_ITERATIONS: usize = 1000;  // Safety precaution
+        
+        while index < MAX_ITERATIONS {
+            let lock_data = outer_value.at(index);
+            match lock_data {
+                None => {
+                    println!("No lock data found for index {}. Terminating loop.", index);
+                    break;  // No more locks to process
+                },
+                Some(lock) => {
+                    println!("Processing lock at index {}...", index);
+
+                    // Extract the "id"
+                    if let Some(id_comp) = lock.at("id") {
+                        println!("Found ID component...");
+
+                        let mut char_index = 0;
+                        let mut id_chars = Vec::new();
+
+                        while let Some(char_value) = id_comp.at(char_index).and_then(|v| v.as_u128()) {
+                            println!("Found char_value: {}", char_value);
+                            id_chars.push(char_value as u8 as char);
+                            char_index += 1;
+                        }
+
+                        if !id_chars.is_empty() {
+                            let id_str: String = id_chars.into_iter().collect();
+                            println!("Lock id: {}", id_str);
+                        } else {
+                            println!("No characters found in ID component.");
+                        }
+
+                    } else {
+                        println!("Failed to extract ID for a lock at index {}.", index);
+                    }
+
+                    // Extract the amount
+                    if let Some(amount) = lock.at("amount").and_then(|amt| amt.as_u128()) {
+                        println!("Amount for lock at index {}: {}", index, amount);
+                    } else {
+                        println!("Failed to extract amount for a lock at index {}.", index);
+                    }
+
+                    // Extract the reasons
+                    if let Some(reasons_value) = lock.at("reasons") {
+                        println!("Reasons for lock at index {}: {:?}", index, reasons_value);
+                    } else {
+                        println!("Failed to extract reasons for a lock at index {}.", index);
+                    }
                 }
-                char_index += 1;
             }
-
-            println!("Lock id: {}", id_str);
+            index += 1;
+        }
+        
+        if index >= MAX_ITERATIONS {
+            println!("Warning: Reached maximum iteration count. Please check the data structure.");
         }
 
-        // Extract the amount from the lock data
-        if let Some(amount_val) = lock_data.at("amount") {
-            if let Some(amount) = amount_val.as_u128() {
-                println!("Amount: {}", amount);
-            }
-        }
-
-        // Extract the reasons from the lock data
-        if let Some(reasons_value) = lock_data.at("reasons") {
-            // If the reasons_value is a variant, its exact structure might be different.
-            // You may need to further process this value based on your requirements.
-            println!("Reasons: {:?}", reasons_value);
-        }
-
-        index += 1; // Move to the next lock in the array
+    } else {
+        println!("Unexpected lock structure. Outer value not found.");
     }
-} else {
-    println!("Unexpected lock data structure!");
 }
-}
-
 
 async fn fetch_and_print_storage_data(api: &OnlineClient<PolkadotConfig>, module: &str, item: &str, key: Value) -> Result<(), Box<dyn std::error::Error>> {
     let storage_query = subxt::storage::dynamic(module, item, vec![key]);
