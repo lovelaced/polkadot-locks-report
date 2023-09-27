@@ -6,11 +6,8 @@ use subxt::utils;
 use std::str::FromStr;
 
 fn process_locks_data(decoded_locks_data: &DecodedValue) {
-    println!("Starting to process locks...");
 
     if let Some(outer_value) = decoded_locks_data.at(0) {
-        println!("Found the outer value...");
-
         let mut index = 0;
         const MAX_ITERATIONS: usize = 1000;  // Safety precaution
         
@@ -18,21 +15,18 @@ fn process_locks_data(decoded_locks_data: &DecodedValue) {
             let lock_data = outer_value.at(index);
             match lock_data {
                 None => {
-                    println!("No lock data found for index {}. Terminating loop.", index);
+                    //println!("No lock data found for index {}. Terminating loop.", index);
                     break;  // No more locks to process
                 },
                 Some(lock) => {
-                    println!("Processing lock at index {}...", index);
 
                     // Extract the "id"
                     if let Some(id_comp) = lock.at("id") {
-                        println!("Found ID component...");
 
                         let mut char_index = 0;
                         let mut id_chars = Vec::new();
 
                         while let Some(char_value) = id_comp.at(char_index).and_then(|v| v.as_u128()) {
-                            println!("Found char_value: {}", char_value);
                             id_chars.push(char_value as u8 as char);
                             char_index += 1;
                         }
@@ -57,7 +51,7 @@ fn process_locks_data(decoded_locks_data: &DecodedValue) {
 
                     // Extract the reasons
                     if let Some(reasons_value) = lock.at("reasons") {
-                        println!("Reasons for lock at index {}: {:?}", index, reasons_value);
+                        //println!("Reasons for lock at index {}: {:?}", index, reasons_value);
                     } else {
                         println!("Failed to extract reasons for a lock at index {}.", index);
                     }
@@ -84,7 +78,7 @@ async fn fetch_and_print_storage_data(api: &OnlineClient<PolkadotConfig>, module
             match value.to_value() {
                 Ok(decoded_value) => {
                     // Printing the decoded data
-                    println!("[Decoded Data for {}.{}] {:?}", module, item, decoded_value);
+                //    println!("[Decoded Data for {}.{}] {:?}", module, item, decoded_value);
 
                     // If you want to access specific fields within the decoded data, you can do so:
                     process_locks_data(&decoded_value);
