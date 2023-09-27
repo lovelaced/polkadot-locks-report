@@ -1,0 +1,15 @@
+[package]
+name = "locks-report"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+subxt = "0.31"
+subxt-signer = "0.31"
+sp-core = "23.0.0"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1.0"
+hex = "0.4"
+
