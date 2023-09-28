@@ -15,21 +15,24 @@ fn plancks_to_dots<T: Into<f64>>(plancks: T) -> f64 {
 async fn gather_and_cross_reference(api: &OnlineClient<PolkadotConfig>, key: utils::AccountId32) -> Result<(), Box<dyn std::error::Error>> {
     let class_locks_data = fetch_class_locks(api, key.clone()).await?;
     let class_locks = class_locks_data.0.as_slice();
-//    for class_lock in class_locks {
-//      println!("Class lock: {:?}", class_lock.0);
-//      let votes_data = fetch_voting(api, key.clone(), class_lock.0).await?;
-//      if let polkadot::runtime_types::pallet_conviction_voting::vote::Voting::Casting(casting) = votes_data {
-//          println!("Vote Data: {:?}", casting.votes.0.as_slice());
-//          for vote in votes_data.0.as_slice() {
-//              println!("Ref info: {:?}", vote);
-//          }
-//      } 
     for class_lock in class_locks {
         println!("Class lock: {:?}", class_lock.0);
         let votes_data = fetch_voting(api, key.clone(), class_lock.0).await?;
         if let polkadot::runtime_types::pallet_conviction_voting::vote::Voting::Casting(casting) = votes_data {
-            let referendum_numbers: Vec<_> = casting.votes.0.as_slice().iter().map(|(ref_num, _)| *ref_num).collect();
-            println!("Referendum numbers for class lock {}: {:?}", class_lock.0, referendum_numbers);
+            let referendums_with_convictions: Vec<_> = casting.votes.0.as_slice().iter()
+                .map(|(ref_num, vote_detail)| {
+                    let conviction = match vote_detail {
+                        polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard { vote, .. } => format!("{}x conviction", vote.0),
+                        // You can extend this match for other vote detail variants, if they exist.
+                        _ => "unknown conviction".to_string(),
+                    };
+                    (ref_num, conviction)
+                })
+                .collect();
+
+            for (ref_num, conviction) in &referendums_with_convictions {
+                println!("Referendum: {}, {}", ref_num, conviction);
+            }
         }
     }
     let locks_data = fetch_account_locks(api, key.clone()).await?;
