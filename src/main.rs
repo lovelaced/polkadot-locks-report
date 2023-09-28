@@ -1,111 +1,159 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use subxt::dynamic::{At, Value, DecodedValue};
-use subxt::{OnlineClient, PolkadotConfig};
+use subxt::{OnlineClient, PolkadotConfig, Error};
 use subxt::utils;
 use std::str::FromStr;
 
 #[subxt::subxt(runtime_metadata_path = "./artifacts/polkadot_metadata_small.scale")]
 pub mod polkadot {}
 
-async fn fetch_and_print_balance(api: &OnlineClient<PolkadotConfig>, key: utils::AccountId32) -> Result<(), Box<dyn std::error::Error>> {
-    // Use static methods to create the storage query
+fn plancks_to_dots<T: Into<f64>>(plancks: T) -> f64 {
+    const PLANCKS_PER_DOT: f64 = 1e10;
+    plancks.into() / PLANCKS_PER_DOT
+}
+
+async fn gather_and_cross_reference(api: &OnlineClient<PolkadotConfig>, key: utils::AccountId32) -> Result<(), Box<dyn std::error::Error>> {
+    let class_locks_data = fetch_class_locks(api, key.clone()).await?;
+    let class_locks = class_locks_data.0.as_slice();
+//    for class_lock in class_locks {
+//      println!("Class lock: {:?}", class_lock.0);
+//      let votes_data = fetch_voting(api, key.clone(), class_lock.0).await?;
+//      if let polkadot::runtime_types::pallet_conviction_voting::vote::Voting::Casting(casting) = votes_data {
+//          println!("Vote Data: {:?}", casting.votes.0.as_slice());
+//          for vote in votes_data.0.as_slice() {
+//              println!("Ref info: {:?}", vote);
+//          }
+//      } 
+    for class_lock in class_locks {
+        println!("Class lock: {:?}", class_lock.0);
+        let votes_data = fetch_voting(api, key.clone(), class_lock.0).await?;
+        if let polkadot::runtime_types::pallet_conviction_voting::vote::Voting::Casting(casting) = votes_data {
+            let referendum_numbers: Vec<_> = casting.votes.0.as_slice().iter().map(|(ref_num, _)| *ref_num).collect();
+            println!("Referendum numbers for class lock {}: {:?}", class_lock.0, referendum_numbers);
+        }
+    }
+    let locks_data = fetch_account_locks(api, key.clone()).await?;
+    let locks = locks_data.0.as_slice();
+    // Access the locks inside the WeakBoundedVec and print them
+    for lock in locks {
+        if let Ok(id_str) = String::from_utf8(lock.id.to_vec()) {
+            let amount_in_dot = lock.amount as f64 / 1e10;
+            println!("Lock ID: {}, Amount: {:.10} DOT", id_str, amount_in_dot);
+        } else {
+            println!("Failed to convert lock id to string");
+        }
+    }
+    Ok(())
+}
+
+async fn fetch_account_balance(api: &OnlineClient<PolkadotConfig>, key: utils::AccountId32) -> Result<polkadot::runtime_types::pallet_balances::types::AccountData<u128>, Box<subxt::Error>> {
     let storage_query = polkadot::storage().balances().account(key);
-
-    // Fetching the storage data
+    
     match api.storage().at_latest().await?.fetch(&storage_query).await {
         Ok(Some(value)) => {
-            // Assuming value is already of the correct type, you can directly process it
-            println!("[Decoded Data for balances.account] {:?}", value);
-        },
-        Ok(None) => println!("[locks] Not found for address in balances.account"),
-        Err(e) => {
-            eprintln!("[Error] Fetching failed for balances.account: {}", e);
-            return Err(e.into());
+            println!("[balances.account] {:?}", value);
+            Ok(value)
         }
-    };
-
-    Ok(())
+        Ok(None) => Err(Box::new(subxt::Error::Other("[balances] Not found for account".to_string()))),
+        Err(e) => {
+            eprintln!("[Error] Fetching failed for account balance: {}", e);
+            Err(Box::new(e))
+        }
+    }
 }
 
-async fn fetch_and_print_locks(api: &OnlineClient<PolkadotConfig>, key: utils::AccountId32) -> Result<(), Box<dyn std::error::Error>> {
-    // Use static methods to create the storage query
+async fn fetch_account_locks(api: &OnlineClient<PolkadotConfig>, key: utils::AccountId32) -> Result<polkadot::runtime_types::bounded_collections::weak_bounded_vec::WeakBoundedVec<
+    polkadot::runtime_types::pallet_balances::types::BalanceLock<u128>>, Box<subxt::Error>> {
     let storage_query = polkadot::storage().balances().locks(key);
-
-    // Fetching the storage data
+    
     match api.storage().at_latest().await?.fetch(&storage_query).await {
         Ok(Some(value)) => {
-            // Assuming value is already of the correct type, you can directly process it
-            println!("[Decoded Data for balances.locks] {:?}", value);
-        },
-        Ok(None) => println!("[locks] Not found for address in balances.locks"),
-        Err(e) => {
-            eprintln!("[Error] Fetching failed for balances.locks: {}", e);
-            return Err(e.into());
+            println!("[balances.lock] {:?}", value);
+            Ok(value)
         }
-    };
-
-    Ok(())
-}
-
-async fn fetch_and_print_conviction_locks(api: &OnlineClient<PolkadotConfig>, key: utils::AccountId32) -> Result<(), Box<dyn std::error::Error>> {
-    // Use static methods to create the storage query
-    let storage_query = polkadot::storage().conviction_voting().class_locks_for(key);
-
-    // Fetching the storage data
-    match api.storage().at_latest().await?.fetch(&storage_query).await {
-        Ok(Some(value)) => {
-            // Assuming value is already of the correct type, you can directly process it
-            println!("[Decoded Data for conviction locks] {:?}", value);
-        },
-        Ok(None) => println!("[voting] Not found for address in conviction locks"),
-        Err(e) => {
-            eprintln!("[Error] Fetching failed for conviction locks: {}", e);
-            return Err(e.into());
-        }
-    };
-
-    Ok(())
-}
-
-async fn fetch_and_print_voting(api: &OnlineClient<PolkadotConfig>, key: utils::AccountId32) -> Result<(), Box<dyn std::error::Error>> {
-    // Use static methods to create the storage query
-    let lock_class: u16 = 16;
-    let storage_query = polkadot::storage().conviction_voting().voting_for(key, lock_class);
-
-    // Fetching the storage data
-    match api.storage().at_latest().await?.fetch(&storage_query).await {
-        Ok(Some(value)) => {
-            // Assuming value is already of the correct type, you can directly process it
-            println!("[Decoded Data for votes] {:?}", value);
-        },
-        Ok(None) => println!("[voting] Not found for address in conviction votes"),
+        Ok(None) => Err(Box::new(subxt::Error::Other("[balances] Not found for address in conviction votes".to_string()))),
         Err(e) => {
             eprintln!("[Error] Fetching failed for conviction votes: {}", e);
-            return Err(e.into());
+            Err(Box::new(e))
         }
-    };
-
-    Ok(())
+    }
 }
-async fn fetch_and_print_vesting(api: &OnlineClient<PolkadotConfig>, key: utils::AccountId32) -> Result<(), Box<dyn std::error::Error>> {
-    // Use static methods to create the storage query
-    let storage_query = polkadot::storage().vesting().vesting(key);
 
-    // Fetching the storage data
+async fn fetch_voting(api: &OnlineClient<PolkadotConfig>, key: utils::AccountId32, lock_class: u16) -> Result<polkadot::runtime_types::pallet_conviction_voting::vote::Voting<u128, utils::AccountId32, u32, u32>, Box<subxt::Error>> {
+    let storage_query = polkadot::storage().conviction_voting().voting_for(key, lock_class);
+    
     match api.storage().at_latest().await?.fetch(&storage_query).await {
         Ok(Some(value)) => {
-            // Assuming value is already of the correct type, you can directly process it
-            println!("[Decoded Data for vesting] {:?}", value);
+            //println!("[conviction_voting.voting_for] {:?}", value);
+            Ok(value)
+        }
+        Ok(None) => Err(Box::new(subxt::Error::Other("[voting] Not found for address in conviction votes".to_string()))),
+        Err(e) => {
+            eprintln!("[Error] Fetching failed for conviction votes: {}", e);
+            Err(Box::new(e))
+        }
+    }
+}
+
+async fn fetch_class_locks(api: &OnlineClient<PolkadotConfig>, key: utils::AccountId32) -> Result<polkadot::runtime_types::bounded_collections::bounded_vec::BoundedVec<(u16, u128)>, Box<subxt::Error>> {
+    let storage_query = polkadot::storage().conviction_voting().class_locks_for(key);
+    
+    match api.storage().at_latest().await?.fetch(&storage_query).await {
+        Ok(Some(value)) => {
+            println!("[Class locks data] {:?}", value);
+            Ok(value)
+        }
+        Ok(None) => Err(Box::new(subxt::Error::Other("[voting] Not found for address in class locks".to_string()))),
+        Err(e) => {
+            eprintln!("[Error] Fetching failed for class locks: {}", e);
+            Err(Box::new(e))
+        }
+    }
+}
+
+async fn fetch_referendum_info(api: &OnlineClient<PolkadotConfig>, key: utils::AccountId32, ref_num: u32) -> Result<polkadot::runtime_types::pallet_referenda::types::ReferendumInfo<
+    u16,
+    polkadot::runtime_types::polkadot_runtime::OriginCaller,
+    u32,
+    polkadot::runtime_types::frame_support::traits::preimages::Bounded<
+        polkadot::runtime_types::polkadot_runtime::RuntimeCall,
+    >,
+    u128,
+    polkadot::runtime_types::pallet_conviction_voting::types::Tally<u128>,
+    utils::AccountId32,
+    (u32, u32),
+>, Box<subxt::Error>> {
+    let storage_query = polkadot::storage().referenda().referendum_info_for(ref_num);
+    
+    match api.storage().at_latest().await?.fetch(&storage_query).await {
+        Ok(Some(value)) => {
+            println!("[Referendum Data] {:?}", value);
+            Ok(value)
         },
-        Ok(None) => println!("[vesting] Not found for address in vesting"),
+        Ok(None) => Err(Box::new(subxt::Error::Other("[referenda] Not found in referenda".to_string()))),
+        Err(e) => {
+            eprintln!("[Error] Fetching failed for referenda: {}", e);
+            Err(Box::new(e))
+        }
+    }
+}
+
+async fn fetch_vesting(api: &OnlineClient<PolkadotConfig>, key: utils::AccountId32) -> Result<polkadot::runtime_types::bounded_collections::bounded_vec::BoundedVec<
+    polkadot::runtime_types::pallet_vesting::vesting_info::VestingInfo<u128, u32>,
+>, Box<subxt::Error>> {
+    let storage_query = polkadot::storage().vesting().vesting(key);
+    
+    match api.storage().at_latest().await?.fetch(&storage_query).await {
+        Ok(Some(value)) => {
+            println!("[Vesting Data] {:?}", value);
+            Ok(value)
+        },
+        Ok(None) => Err(Box::new(subxt::Error::Other("[vesting] Not found in vesting".to_string()))),
         Err(e) => {
             eprintln!("[Error] Fetching failed for vesting: {}", e);
-            return Err(e.into());
+            Err(Box::new(e))
         }
-    };
-
-    Ok(())
+    }
 }
 
 #[tokio::main]
@@ -136,28 +184,23 @@ async fn process_address(
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("\n[Processing] Address: {}", address);
     let public_key_bytes = utils::AccountId32::from_str(address)?;
-
-    println!("[Balance] Fetching general balance...");
-    if let Err(e) = fetch_and_print_balance(&api, public_key_bytes.clone()).await {
+    if let Err(e) = fetch_account_balance(&api, public_key_bytes.clone()).await {
         eprintln!("[Error] Failed to fetch balance: {}", e);
     }
-    if let Err(e) = fetch_and_print_locks(&api, public_key_bytes.clone()).await {
+    if let Err(e) = fetch_account_locks(&api, public_key_bytes.clone()).await {
         eprintln!("[Error] Failed to fetch locked balance: {}", e);
     }
-
-    println!("[Vesting Balance] Fetching...");
-    if let Err(e) = fetch_and_print_vesting(&api, public_key_bytes.clone()).await {
-        eprintln!("[Error] Failed to fetch vesting balance: {}", e);
-    }
-
-    println!("[Conviction Voting] Fetching...");
-    if let Err(e) = fetch_and_print_conviction_locks(&api, public_key_bytes.clone()).await {
-        eprintln!("[Error] Failed to fetch conviction: {}", e);
-    }
-//    println!("[Conviction Voting] Fetching...");
-//    if let Err(e) = fetch_and_print_voting(&api, public_key_bytes.clone()).await {
-//        eprintln!("[Error] Failed to fetch votes: {}", e);
+//
+//    println!("[Vesting Balance] Fetching...");
+//    if let Err(e) = fetch_and_print_vesting(&api, public_key_bytes.clone()).await {
+//        eprintln!("[Error] Failed to fetch vesting balance: {}", e);
 //    }
+//    if let Err(e) = fetch_class_locks(&api, public_key_bytes.clone()).await {
+//        eprintln!("[Error] Failed to fetch class locks: {}", e);
+//    }
+    if let Err(e) = gather_and_cross_reference(&api, public_key_bytes.clone()).await {
+        eprintln!("[Error] Failed to xr: {}", e);
+    }
   Ok(())
 }
 
