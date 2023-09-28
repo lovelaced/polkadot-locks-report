@@ -5,6 +5,9 @@ use subxt::{OnlineClient, PolkadotConfig};
 use subxt::utils;
 use std::str::FromStr;
 
+#[subxt::subxt(runtime_metadata_path = "./artifacts/polkadot_metadata_small.scale")]
+pub mod polkadot {}
+
 fn process_locks_data(decoded_locks_data: &DecodedValue) {
 
     if let Some(outer_value) = decoded_locks_data.at(0) {
@@ -35,25 +38,25 @@ fn process_locks_data(decoded_locks_data: &DecodedValue) {
                             let id_str: String = id_chars.into_iter().collect();
                             println!("Lock id: {}", id_str);
                         } else {
-                            println!("No characters found in ID component.");
+                        //    println!("No characters found in ID component.");
                         }
 
                     } else {
-                        println!("Failed to extract ID for a lock at index {}.", index);
+                    //    println!("Failed to extract ID for a lock at index {}.", index);
                     }
 
                     // Extract the amount
                     if let Some(amount) = lock.at("amount").and_then(|amt| amt.as_u128()) {
                         println!("Amount for lock at index {}: {}", index, amount);
                     } else {
-                        println!("Failed to extract amount for a lock at index {}.", index);
+                    //    println!("Failed to extract amount for a lock at index {}.", index);
                     }
 
                     // Extract the reasons
                     if let Some(reasons_value) = lock.at("reasons") {
                         //println!("Reasons for lock at index {}: {:?}", index, reasons_value);
                     } else {
-                        println!("Failed to extract reasons for a lock at index {}.", index);
+                    //    println!("Failed to extract reasons for a lock at index {}.", index);
                     }
                 }
             }
@@ -69,6 +72,53 @@ fn process_locks_data(decoded_locks_data: &DecodedValue) {
     }
 }
 
+async fn fetch_and_print_balance(api: &OnlineClient<PolkadotConfig>, key: utils::AccountId32) -> Result<(), Box<dyn std::error::Error>> {
+    // Use static methods to create the storage query
+    let storage_query = polkadot::storage().balances().account(key);
+
+    // Fetching the storage data
+    match api.storage().at_latest().await?.fetch(&storage_query).await {
+        Ok(Some(value)) => {
+            // Assuming value is already of the correct type, you can directly process it
+            println!("[Decoded Data for balances.account] {:?}", value);
+
+            // Process the locks data (if necessary, you can adjust the process function)
+            //process_locks_data(&value);
+        },
+        Ok(None) => println!("[locks] Not found for address in balances.account"),
+        Err(e) => {
+            eprintln!("[Error] Fetching failed for balances.account: {}", e);
+            return Err(e.into());
+        }
+    };
+
+    Ok(())
+}
+
+async fn fetch_and_print_locks(api: &OnlineClient<PolkadotConfig>, key: utils::AccountId32) -> Result<(), Box<dyn std::error::Error>> {
+    // Use static methods to create the storage query
+    let storage_query = polkadot::storage().balances().locks(key);
+
+    // Fetching the storage data
+    match api.storage().at_latest().await?.fetch(&storage_query).await {
+        Ok(Some(value)) => {
+            // Assuming value is already of the correct type, you can directly process it
+            println!("[Decoded Data for balances.locks] {:?}", value);
+
+            // Process the locks data (if necessary, you can adjust the process function)
+            //process_locks_data(&value);
+        },
+        Ok(None) => println!("[locks] Not found for address in balances.locks"),
+        Err(e) => {
+            eprintln!("[Error] Fetching failed for balances.locks: {}", e);
+            return Err(e.into());
+        }
+    };
+
+    Ok(())
+}
+
+
 async fn fetch_and_print_storage_data(api: &OnlineClient<PolkadotConfig>, module: &str, item: &str, key: Value) -> Result<(), Box<dyn std::error::Error>> {
     let storage_query = subxt::storage::dynamic(module, item, vec![key]);
 
@@ -78,7 +128,7 @@ async fn fetch_and_print_storage_data(api: &OnlineClient<PolkadotConfig>, module
             match value.to_value() {
                 Ok(decoded_value) => {
                     // Printing the decoded data
-                //    println!("[Decoded Data for {}.{}] {:?}", module, item, decoded_value);
+                    println!("[Decoded Data for {}.{}] {:?}", module, item, decoded_value);
 
                     // If you want to access specific fields within the decoded data, you can do so:
                     process_locks_data(&decoded_value);
@@ -161,13 +211,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let key: Value = Value::from_bytes(&public_key_bytes);
 
     println!("[Balance] Fetching general balance...");
-    if let Err(e) = fetch_and_print_storage_data(&api, "Balances", "Account", key.clone()).await {
+    //if let Err(e) = fetch_and_print_storage_data(&api, "Balances", "Account", key.clone()).await {
+    if let Err(e) = fetch_and_print_balance(&api, public_key_bytes.clone()).await {
         eprintln!("[Error] Failed to fetch balance: {}", e);
         continue;
     }
 
     println!("[Locked Balance] Fetching...");
-    if let Err(e) = fetch_and_print_storage_data(&api, "Balances", "Locks", key).await {
+    //if let Err(e) = fetch_and_print_storage_data(&api, "Balances", "Locks", key.clone()).await {
+    if let Err(e) = fetch_and_print_locks(&api, public_key_bytes.clone()).await {
+        eprintln!("[Error] Failed to fetch locked balance: {}", e);
+        continue;
+    }
+
+    println!("[Vesting Balance] Fetching...");
+    if let Err(e) = fetch_and_print_storage_data(&api, "Vesting", "Vesting", key.clone()).await {
+        eprintln!("[Error] Failed to fetch locked balance: {}", e);
+        continue;
+    }
+
+    println!("[Conviction Voting] Fetching...");
+    if let Err(e) = fetch_and_print_storage_data(&api, "ConvictionVoting", "ClassLocksFor", key).await {
         eprintln!("[Error] Failed to fetch locked balance: {}", e);
         continue;
     }
