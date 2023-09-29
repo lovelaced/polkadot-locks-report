@@ -19,7 +19,7 @@ async fn gather_and_cross_reference(api: &OnlineClient<PolkadotConfig>, key: uti
         println!("Class lock: {:?}", class_lock.0);
         let votes_data = fetch_voting(api, key.clone(), class_lock.0).await?;
         if let polkadot::runtime_types::pallet_conviction_voting::vote::Voting::Casting(casting) = votes_data {
-        let referendums_with_convictions: Vec<_> = casting.votes.0.as_slice().iter()
+let referendums_with_details: Vec<_> = casting.votes.0.as_slice().iter()
     .map(|(ref_num, vote_detail)| {
         match vote_detail {
             polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard { vote, balance } => {
@@ -28,13 +28,23 @@ async fn gather_and_cross_reference(api: &OnlineClient<PolkadotConfig>, key: uti
                 let amount_in_dot = *balance as f64 / 1e10;
                 format!("Referendum: {}, {}x conviction, Vote: {}, Amount: {:.10} DOT", ref_num, conviction, vote_type, amount_in_dot)
             },
-            // You can extend this match for other vote detail variants, if they exist.
-            _ => "unknown conviction".to_string(),
+            polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Split { aye, nay } => {
+                let aye_amount_in_dot = *aye as f64 / 1e10;
+                let nay_amount_in_dot = *nay as f64 / 1e10;
+                format!("Referendum: {}, Split vote, Aye Amount: {:.10} DOT, Nay Amount: {:.10} DOT", ref_num, aye_amount_in_dot, nay_amount_in_dot)
+            },
+            polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::SplitAbstain { aye, nay, abstain } => {
+                let aye_amount_in_dot = *aye as f64 / 1e10;
+                let nay_amount_in_dot = *nay as f64 / 1e10;
+                let abstain_amount_in_dot = *abstain as f64 / 1e10;
+                format!("Referendum: {}, Split Abstain, Aye Amount: {:.10} DOT, Nay Amount: {:.10} DOT, Abstain Amount: {:.10} DOT", ref_num, aye_amount_in_dot, nay_amount_in_dot, abstain_amount_in_dot)
+            },
+            _ => format!("Referendum: {}, unknown conviction", ref_num),
         }
     })
     .collect();
 
-for info in &referendums_with_convictions {
+for info in &referendums_with_details {
     println!("{}", info);
 }
 }
