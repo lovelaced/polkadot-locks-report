@@ -1,3 +1,4 @@
+use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Utc};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::str::FromStr;
@@ -27,6 +28,28 @@ fn plancks_to_dots<T: Into<f64>>(plancks: T) -> f64 {
     plancks.into() / PLANCKS_PER_DOT
 }
 
+fn calculate_end_datetime(base_block: u32, current_block: u32, conviction: u8) -> DateTime<Utc> {
+    // The date and time when block 17000000 occurred
+    let base_datetime = NaiveDate::from_ymd_opt(2023, 8, 25)
+        .unwrap()
+        .and_hms_opt(13, 1, 0)
+        .unwrap()
+        .and_utc();
+    // The difference in block numbers from the base block
+    let blocks_diff = current_block - base_block;
+    // Assuming 6 seconds per block
+    // Calculate the number of minutes passed since the base block
+    let minutes_diff = blocks_diff as i64 * 6 / 60;
+
+    // Calculate the datetime of the given block number
+    let new_datetime = base_datetime + Duration::minutes(minutes_diff);
+
+    let conviction_multiplier = get_conviction_multiplier(conviction) as i64;
+    let lock_period_in_minutes = BASE_LOCK_PERIOD as i64 * conviction_multiplier * 24 * 60; // Convert 28 days to minutes
+
+    new_datetime + Duration::minutes(lock_period_in_minutes)
+}
+
 async fn gather_and_cross_reference(
     api: &OnlineClient<PolkadotConfig>,
     key: &utils::AccountId32,
@@ -34,16 +57,25 @@ async fn gather_and_cross_reference(
     let class_locks_data = fetch_class_locks(api, key).await?;
     let class_locks = class_locks_data.0.as_slice();
 
-    for class_lock in class_locks {
-        let votes_data = fetch_voting(api, key, class_lock.0).await?;
+    let mut blocks_sub = api.blocks().subscribe_finalized().await?;
+    // Fetch the current block
+    if let Some(block) = blocks_sub.next().await {
+        let block = block?;
+        let current_block_number = block.header().number;
 
-        if let polkadot::runtime_types::pallet_conviction_voting::vote::Voting::Casting(casting) = votes_data {
-            let mut referendums_with_details = vec![];
+        for class_lock in class_locks {
+            let votes_data = fetch_voting(api, key, class_lock.0).await?;
 
-            for (ref_num, vote_detail) in casting.votes.0.as_slice().iter() {
-                let ref_data = fetch_referendum_info(api, key, *ref_num).await?;
+            if let polkadot::runtime_types::pallet_conviction_voting::vote::Voting::Casting(
+                casting,
+            ) = votes_data
+            {
+                let mut referendums_with_details = vec![];
 
-                let (message, block_number) = match &ref_data {
+                for (ref_num, vote_detail) in casting.votes.0.as_slice().iter() {
+                    let ref_data = fetch_referendum_info(api, key, *ref_num).await?;
+
+                    let (message, block_number) = match &ref_data {
                     polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Ongoing(status) => {
                         let ayes = status.tally.ayes as f64 / 1e10;
                         let nays = status.tally.nays as f64 / 1e10;
@@ -93,12 +125,20 @@ async fn gather_and_cross_reference(
                     }
                 };
 
-                println!("Block Number: {}", block_number);  // Print block number here
-                referendums_with_details.push(message);
+                    //println!("Block Number: {}", block_number); // Print block number here
+                    referendums_with_details.push(message);
+                    if let polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Ongoing(_) = &ref_data {
+    if let polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard { vote, .. } = vote_detail {
+        let conviction = vote.0 % 128;
+        let end_datetime = calculate_end_datetime(block_number, current_block_number, conviction);
+        println!("End of Lock Period: {}", end_datetime);
+    }
             }
+                }
 
-            for info in &referendums_with_details {
-                println!("{}", info);
+                for info in &referendums_with_details {
+                    println!("{}", info);
+                }
             }
         }
     }
@@ -109,7 +149,7 @@ async fn gather_and_cross_reference(
     for lock in locks {
         if let Ok(id_str) = String::from_utf8(lock.id.to_vec()) {
             let amount_in_dot = lock.amount as f64 / 1e10;
-            println!("Lock ID: {}, Amount: {:.10} DOT", id_str, amount_in_dot);
+        //    println!("Lock ID: {}, Amount: {:.10} DOT", id_str, amount_in_dot);
         } else {
             println!("Failed to convert lock id to string");
         }
@@ -151,7 +191,7 @@ async fn fetch_account_locks(
 
     match api.storage().at_latest().await?.fetch(&storage_query).await {
         Ok(Some(value)) => {
-            println!("[balances.lock] {:?}", value);
+        //    println!("[balances.lock] {:?}", value);
             Ok(value)
         }
         Ok(None) => Err(Box::new(subxt::Error::Other(
@@ -207,7 +247,7 @@ async fn fetch_class_locks(
 
     match api.storage().at_latest().await?.fetch(&storage_query).await {
         Ok(Some(value)) => {
-            println!("[Class locks data] {:?}", value);
+        //    println!("[Class locks data] {:?}", value);
             Ok(value)
         }
         Ok(None) => Err(Box::new(subxt::Error::Other(
@@ -243,7 +283,7 @@ async fn fetch_referendum_info(
 
     match api.storage().at_latest().await?.fetch(&storage_query).await {
         Ok(Some(value)) => {
-            println!("[Referendum Data] {:?}", value);
+        //    println!("[Referendum Data] {:?}", value);
             Ok(value)
         }
         Ok(None) => Err(Box::new(subxt::Error::Other(
@@ -269,7 +309,7 @@ async fn fetch_vesting(
 
     match api.storage().at_latest().await?.fetch(&storage_query).await {
         Ok(Some(value)) => {
-            println!("[Vesting Data] {:?}", value);
+        //    println!("[Vesting Data] {:?}", value);
             Ok(value)
         }
         Ok(None) => Err(Box::new(subxt::Error::Other(
