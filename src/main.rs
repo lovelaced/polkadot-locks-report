@@ -11,13 +11,7 @@ pub mod polkadot {}
 
 fn get_conviction_multiplier(conviction: u8) -> u32 {
     match conviction {
-        0 => 0,
-        1 => 1,
-        2 => 2,
-        3 => 4,
-        4 => 8,
-        5 => 16,
-        6 => 32,
+        0..=6 => 1 << conviction,
         _ => panic!("Unknown conviction value: {}", conviction),
     }
 }
@@ -35,9 +29,9 @@ fn categorize_lock_period(end_date: DateTime<Utc>) -> &'static str {
 }
 
 const BASE_LOCK_PERIOD: u32 = 28; // 28 days
+const PLANCKS_PER_DOT: f64 = 1e10;
 
 fn plancks_to_dots<T: Into<f64>>(plancks: T) -> f64 {
-    const PLANCKS_PER_DOT: f64 = 1e10;
     plancks.into() / PLANCKS_PER_DOT
 }
 
@@ -46,30 +40,44 @@ fn calculate_end_datetime(
     current_block: u32,
     conviction: u8,
 ) -> (DateTime<Utc>, DateTime<Utc>) {
-    // The date and time when block 17000000 occurred
+    const SECONDS_PER_BLOCK: i64 = 6;
+    const MINUTES_PER_HOUR: i64 = 60;
+    const HOURS_PER_DAY: i64 = 24;
+
     let base_datetime = NaiveDate::from_ymd_opt(2023, 8, 25)
-        .unwrap()
+        .expect("Invalid date")
         .and_hms_opt(13, 1, 0)
-        .unwrap()
+        .expect("Invalid time")
         .and_utc();
 
-    // The difference in block numbers from the base block
-    let blocks_diff = current_block - base_block;
-
-    // Assuming 6 seconds per block
-    // Calculate the number of minutes passed since the base block
-    let minutes_diff = blocks_diff as i64 * 6 / 60;
-
-    // Calculate the datetime of the current block number
+    let minutes_diff = (current_block - base_block) as i64 * SECONDS_PER_BLOCK / MINUTES_PER_HOUR;
     let current_block_datetime = base_datetime + Duration::minutes(minutes_diff);
 
     let conviction_multiplier = get_conviction_multiplier(conviction) as i64;
-    let lock_period_in_minutes = BASE_LOCK_PERIOD as i64 * conviction_multiplier * 24 * 60; // Convert 28 days to minutes
+    let lock_period_in_minutes =
+        BASE_LOCK_PERIOD as i64 * conviction_multiplier * HOURS_PER_DAY * MINUTES_PER_HOUR;
 
-    // Calculate end of the lock period
     let end_datetime = current_block_datetime + Duration::minutes(lock_period_in_minutes);
-
     (current_block_datetime, end_datetime)
+}
+
+// Helper function to calculate and update lock dates
+fn update_lock_dates(
+    lock_dates: &mut HashMap<NaiveDateTime, f64>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    amount: f64,
+) {
+    let mut current_date = start.date();
+    let end_date = end.date();
+
+    while current_date <= end_date {
+        let naive_datetime = current_date.and_hms(0, 0, 0).naive_utc();
+        let entry = lock_dates.entry(naive_datetime).or_insert(0.0);
+        *entry = f64::max(*entry, amount);
+
+        current_date = current_date.succ();
+    }
 }
 
 async fn gather_and_cross_reference(
@@ -153,27 +161,15 @@ async fn gather_and_cross_reference(
                     referendums_with_details.push(message);
                     if let polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Ongoing(_) = &ref_data {
             if let polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Ongoing(_) = &ref_data {
-    if let polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard { vote, balance } = vote_detail {
-        let conviction = vote.0 % 128;
-        let (current_block_date, end_datetime) = calculate_end_datetime(block_number, current_block_number, conviction);
-        // Extract the amount locked in DOT from the balance
-        let locked_amount_in_dot = *balance as f64 / 1e10;
-        // Update the locked amount from the current block to the end_datetime
-let mut current_date = current_block_date.date();
-let end_date = end_datetime.date();
+                if let polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard { vote, balance } = vote_detail {
+                    let conviction = vote.0 % 128;
+                    let (current_block_date, end_datetime) = calculate_end_datetime(block_number, current_block_number, conviction);
 
-while current_date <= end_date {
-    // Convert Date<Utc> to NaiveDateTime
-    let naive_datetime = current_date.and_hms(0, 0, 0).naive_utc();
-
-    let entry = lock_dates.entry(naive_datetime).or_insert(0.0);
-    *entry = f64::max(*entry, locked_amount_in_dot);
-
-    current_date = current_date.succ(); // Increment the date by one day
-}
+                    let locked_amount_in_dot = *balance as f64 / PLANCKS_PER_DOT;
+                    update_lock_dates(&mut lock_dates, current_block_date, end_datetime, locked_amount_in_dot);
+                }
 
     }
-}
 }
                     let mut categorized_amounts: HashMap<&'static str, f64> = HashMap::new();
 
@@ -183,7 +179,7 @@ while current_date <= end_date {
 
                         let category = categorize_lock_period(date_in_utc);
                         let entry = categorized_amounts.entry(category).or_insert(0.0);
-                        *entry += amount;
+                        *entry = amount;
                     }
                     for (category, &amount) in &categorized_amounts {
                         println!("{}: {:.10} DOT locked", category, amount);
