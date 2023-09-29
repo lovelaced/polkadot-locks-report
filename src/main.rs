@@ -71,7 +71,7 @@ async fn gather_and_cross_reference(
     let class_locks = class_locks_data.0.as_slice();
 
     let mut blocks_sub = api.blocks().subscribe_finalized().await?;
-    let mut categorized_counts = HashMap::new();
+    let mut categorized_counts: HashMap<&'static str, (usize, f64)> = HashMap::new();
 
     // Fetch the current block
     if let Some(block) = blocks_sub.next().await {
@@ -143,21 +143,30 @@ async fn gather_and_cross_reference(
                     //println!("Block Number: {}", block_number); // Print block number here
                     referendums_with_details.push(message);
                     if let polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Ongoing(_) = &ref_data {
-    if let polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard { vote, .. } = vote_detail {
+if let polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Ongoing(_) = &ref_data {
+    if let polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard { vote, balance } = vote_detail {
         let conviction = vote.0 % 128;
         let end_datetime = calculate_end_datetime(block_number, current_block_number, conviction);
         let category = categorize_lock_period(end_datetime);
-        *categorized_counts.entry(category).or_insert(0) += 1;
-        println!("End of Lock Period: {}", end_datetime);
+        // Extract the amount locked in DOT from the balance
+        let locked_amount_in_dot = *balance as f64 / 1e10;
+        // Update the count and the total locked amount for this category
+        let entry = categorized_counts.entry(category).or_insert((0, 0.0));
+        entry.0 += 1;
+        entry.1 += locked_amount_in_dot;
     }
+}
             }
                 }
 
                 for info in &referendums_with_details {
                     println!("{}", info);
                 }
-                for (category, count) in &categorized_counts {
-                    println!("{}: {}", category, count);
+                for (category, (count, total_amount)) in &categorized_counts {
+                    println!(
+                        "{}: {} locks with a total of {:.10} DOT locked",
+                        category, count, total_amount
+                    );
                 }
             }
         }
