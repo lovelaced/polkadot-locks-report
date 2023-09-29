@@ -29,56 +29,72 @@ fn plancks_to_dots<T: Into<f64>>(plancks: T) -> f64 {
 
 async fn gather_and_cross_reference(
     api: &OnlineClient<PolkadotConfig>,
-    key: utils::AccountId32,
+    key: &utils::AccountId32,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let class_locks_data = fetch_class_locks(api, key.clone()).await?;
+    let class_locks_data = fetch_class_locks(api, key).await?;
     let class_locks = class_locks_data.0.as_slice();
 
     for class_lock in class_locks {
-        let votes_data = fetch_voting(api, key.clone(), class_lock.0).await?;
+        let votes_data = fetch_voting(api, key, class_lock.0).await?;
 
-        if let polkadot::runtime_types::pallet_conviction_voting::vote::Voting::Casting(casting) =
-            votes_data
-        {
+        if let polkadot::runtime_types::pallet_conviction_voting::vote::Voting::Casting(casting) = votes_data {
             let mut referendums_with_details = vec![];
 
             for (ref_num, vote_detail) in casting.votes.0.as_slice().iter() {
-                let ref_data = fetch_referendum_info(api, key.clone(), *ref_num).await?;
+                let ref_data = fetch_referendum_info(api, key, *ref_num).await?;
 
-                let tally = if let polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Ongoing(status) = &ref_data {
-                    &status.tally
-                } else {
-                    // Handle the case when there's no Ongoing status or provide a default value
-                    continue;
+                let (message, block_number) = match &ref_data {
+                    polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Ongoing(status) => {
+                        let ayes = status.tally.ayes as f64 / 1e10;
+                        let nays = status.tally.nays as f64 / 1e10;
+
+                        let detail = match vote_detail {
+                            polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard { vote, balance } => {
+                                let conviction = vote.0 % 128;
+                                let vote_type = if vote.0 >= 128 { "aye" } else { "nay" };
+                                let amount_in_dot = *balance as f64 / 1e10;
+                                format!("Referendum: {}, {}x conviction, Vote: {}, Amount: {:.10} DOT, Tally: Ayes: {:.10} DOT, Nays: {:.10} DOT",
+                                        ref_num, conviction, vote_type, amount_in_dot, ayes, nays)
+                            },
+                            polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Split { aye, nay } => {
+                                let aye_amount_in_dot = *aye as f64 / 1e10;
+                                let nay_amount_in_dot = *nay as f64 / 1e10;
+                                format!("Referendum: {}, Split vote, Aye Amount: {:.10} DOT, Nay Amount: {:.10} DOT, Tally: Ayes: {:.10} DOT, Nays: {:.10} DOT",
+                                        ref_num, aye_amount_in_dot, nay_amount_in_dot, ayes, nays)
+                            },
+                            polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::SplitAbstain { aye, nay, abstain } => {
+                                let aye_amount_in_dot = *aye as f64 / 1e10;
+                                let nay_amount_in_dot = *nay as f64 / 1e10;
+                                let abstain_amount_in_dot = *abstain as f64 / 1e10;
+                                format!("Referendum: {}, Split Abstain, Aye Amount: {:.10} DOT, Nay Amount: {:.10} DOT, Abstain Amount: {:.10} DOT, Tally: Ayes: {:.10} DOT, Nays: {:.10} DOT",
+                                        ref_num, aye_amount_in_dot, nay_amount_in_dot, abstain_amount_in_dot, ayes, nays)
+                            },
+                            _ => format!("Referendum: {}, unknown conviction, Tally: Ayes: {:.10} DOT, Nays: {:.10} DOT", ref_num, ayes, nays)
+                        };
+                        (detail, status.submitted)
+                    },
+                    polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Approved(block_number, ..) => {
+                        (format!("Referendum: {}, was accepted.", ref_num), *block_number)
+                    },
+                    polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Rejected(block_number, ..) => {
+                        (format!("Referendum: {}, was rejected.", ref_num), *block_number)
+                    },
+                    polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Killed(block_number, ..) => {
+                        (format!("Referendum: {}, was killed.", ref_num), *block_number)
+                    },
+                    polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Cancelled(block_number, ..) => {
+                        (format!("Referendum: {}, was cancelled.", ref_num), *block_number)
+                    },
+                    polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::TimedOut(block_number, ..) => {
+                        (format!("Referendum: {}, timed out.", ref_num), *block_number)
+                    },
+                    _ => {
+                        (format!("Referendum: {}, had unknown status.", ref_num), 0)
+                    }
                 };
 
-                let ayes = tally.ayes as f64 / 1e10;
-                let nays = tally.nays as f64 / 1e10;
-
-                let detail = match vote_detail {
-                    polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard { vote, balance } => {
-                        let conviction = vote.0 % 128;
-                        let vote_type = if vote.0 >= 128 { "aye" } else { "nay" };
-                        let amount_in_dot = *balance as f64 / 1e10;
-                        format!("Referendum: {}, {}x conviction, Vote: {}, Amount: {:.10} DOT, Tally: Ayes: {:.10} DOT, Nays: {:.10} DOT", 
-                                ref_num, conviction, vote_type, amount_in_dot, ayes, nays)
-                    },
-                    polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Split { aye, nay } => {
-                        let aye_amount_in_dot = *aye as f64 / 1e10;
-                        let nay_amount_in_dot = *nay as f64 / 1e10;
-                        format!("Referendum: {}, Split vote, Aye Amount: {:.10} DOT, Nay Amount: {:.10} DOT, Tally: Ayes: {:.10} DOT, Nays: {:.10} DOT", 
-                                ref_num, aye_amount_in_dot, nay_amount_in_dot, ayes, nays)
-                    },
-                    polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::SplitAbstain { aye, nay, abstain } => {
-                        let aye_amount_in_dot = *aye as f64 / 1e10;
-                        let nay_amount_in_dot = *nay as f64 / 1e10;
-                        let abstain_amount_in_dot = *abstain as f64 / 1e10;
-                        format!("Referendum: {}, Split Abstain, Aye Amount: {:.10} DOT, Nay Amount: {:.10} DOT, Abstain Amount: {:.10} DOT, Tally: Ayes: {:.10} DOT, Nays: {:.10} DOT",
-                               ref_num, aye_amount_in_dot, nay_amount_in_dot, abstain_amount_in_dot, ayes, nays)
-                    },
-                    _ => format!("Referendum: {}, unknown conviction, Tally: Ayes: {:.10} DOT, Nays: {:.10} DOT", ref_num, ayes, nays),
-                };
-                referendums_with_details.push(detail);
+                println!("Block Number: {}", block_number);  // Print block number here
+                referendums_with_details.push(message);
             }
 
             for info in &referendums_with_details {
@@ -87,7 +103,7 @@ async fn gather_and_cross_reference(
         }
     }
 
-    let locks_data = fetch_account_locks(api, key.clone()).await?;
+    let locks_data = fetch_account_locks(api, &key).await?;
     let locks = locks_data.0.as_slice();
     // Access the locks inside the WeakBoundedVec and print them
     for lock in locks {
@@ -103,7 +119,7 @@ async fn gather_and_cross_reference(
 
 async fn fetch_account_balance(
     api: &OnlineClient<PolkadotConfig>,
-    key: utils::AccountId32,
+    key: &utils::AccountId32,
 ) -> Result<polkadot::runtime_types::pallet_balances::types::AccountData<u128>, Box<subxt::Error>> {
     let storage_query = polkadot::storage().balances().account(key);
 
@@ -124,7 +140,7 @@ async fn fetch_account_balance(
 
 async fn fetch_account_locks(
     api: &OnlineClient<PolkadotConfig>,
-    key: utils::AccountId32,
+    key: &utils::AccountId32,
 ) -> Result<
     polkadot::runtime_types::bounded_collections::weak_bounded_vec::WeakBoundedVec<
         polkadot::runtime_types::pallet_balances::types::BalanceLock<u128>,
@@ -150,7 +166,7 @@ async fn fetch_account_locks(
 
 async fn fetch_voting(
     api: &OnlineClient<PolkadotConfig>,
-    key: utils::AccountId32,
+    key: &utils::AccountId32,
     lock_class: u16,
 ) -> Result<
     polkadot::runtime_types::pallet_conviction_voting::vote::Voting<
@@ -182,7 +198,7 @@ async fn fetch_voting(
 
 async fn fetch_class_locks(
     api: &OnlineClient<PolkadotConfig>,
-    key: utils::AccountId32,
+    key: &utils::AccountId32,
 ) -> Result<
     polkadot::runtime_types::bounded_collections::bounded_vec::BoundedVec<(u16, u128)>,
     Box<subxt::Error>,
@@ -206,7 +222,7 @@ async fn fetch_class_locks(
 
 async fn fetch_referendum_info(
     api: &OnlineClient<PolkadotConfig>,
-    key: utils::AccountId32,
+    key: &utils::AccountId32,
     ref_num: u32,
 ) -> Result<
     polkadot::runtime_types::pallet_referenda::types::ReferendumInfo<
@@ -242,7 +258,7 @@ async fn fetch_referendum_info(
 
 async fn fetch_vesting(
     api: &OnlineClient<PolkadotConfig>,
-    key: utils::AccountId32,
+    key: &utils::AccountId32,
 ) -> Result<
     polkadot::runtime_types::bounded_collections::bounded_vec::BoundedVec<
         polkadot::runtime_types::pallet_vesting::vesting_info::VestingInfo<u128, u32>,
@@ -300,10 +316,10 @@ async fn process_address(
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("\n[Processing] Address: {}", address);
     let public_key_bytes = utils::AccountId32::from_str(address)?;
-    if let Err(e) = fetch_account_balance(&api, public_key_bytes.clone()).await {
+    if let Err(e) = fetch_account_balance(&api, &public_key_bytes).await {
         eprintln!("[Error] Failed to fetch balance: {}", e);
     }
-    if let Err(e) = fetch_account_locks(&api, public_key_bytes.clone()).await {
+    if let Err(e) = fetch_account_locks(&api, &public_key_bytes).await {
         eprintln!("[Error] Failed to fetch locked balance: {}", e);
     }
     //
@@ -314,7 +330,7 @@ async fn process_address(
     //    if let Err(e) = fetch_class_locks(&api, public_key_bytes.clone()).await {
     //        eprintln!("[Error] Failed to fetch class locks: {}", e);
     //    }
-    if let Err(e) = gather_and_cross_reference(&api, public_key_bytes.clone()).await {
+    if let Err(e) = gather_and_cross_reference(&api, &public_key_bytes).await {
         eprintln!("[Error] Failed to xr: {}", e);
     }
     Ok(())
