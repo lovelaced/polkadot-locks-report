@@ -19,21 +19,25 @@ async fn gather_and_cross_reference(api: &OnlineClient<PolkadotConfig>, key: uti
         println!("Class lock: {:?}", class_lock.0);
         let votes_data = fetch_voting(api, key.clone(), class_lock.0).await?;
         if let polkadot::runtime_types::pallet_conviction_voting::vote::Voting::Casting(casting) = votes_data {
-            let referendums_with_convictions: Vec<_> = casting.votes.0.as_slice().iter()
-                .map(|(ref_num, vote_detail)| {
-                    let conviction = match vote_detail {
-                        polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard { vote, .. } => format!("{}x conviction", vote.0),
-                        // You can extend this match for other vote detail variants, if they exist.
-                        _ => "unknown conviction".to_string(),
-                    };
-                    (ref_num, conviction)
-                })
-                .collect();
-
-            for (ref_num, conviction) in &referendums_with_convictions {
-                println!("Referendum: {}, {}", ref_num, conviction);
-            }
+        let referendums_with_convictions: Vec<_> = casting.votes.0.as_slice().iter()
+    .map(|(ref_num, vote_detail)| {
+        match vote_detail {
+            polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard { vote, balance } => {
+                let conviction = vote.0 % 128;  // Extract conviction
+                let vote_type = if vote.0 >= 128 { "aye" } else { "nay" };
+                let amount_in_dot = *balance as f64 / 1e10;
+                format!("Referendum: {}, {}x conviction, Vote: {}, Amount: {:.10} DOT", ref_num, conviction, vote_type, amount_in_dot)
+            },
+            // You can extend this match for other vote detail variants, if they exist.
+            _ => "unknown conviction".to_string(),
         }
+    })
+    .collect();
+
+for info in &referendums_with_convictions {
+    println!("{}", info);
+}
+}
     }
     let locks_data = fetch_account_locks(api, key.clone()).await?;
     let locks = locks_data.0.as_slice();
