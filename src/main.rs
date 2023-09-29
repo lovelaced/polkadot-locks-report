@@ -72,11 +72,13 @@ fn update_lock_dates(
     let end_date = end.date();
 
     while current_date <= end_date {
+        // Convert Date<Utc> to NaiveDateTime
         let naive_datetime = current_date.and_hms(0, 0, 0).naive_utc();
-        let entry = lock_dates.entry(naive_datetime).or_insert(0.0);
-        *entry = f64::max(*entry, amount);
 
-        current_date = current_date.succ();
+        let existing_amount = lock_dates.entry(naive_datetime).or_insert(0.0);
+        *existing_amount = f64::max(*existing_amount, amount); // Use 'amount' here
+
+        current_date = current_date + chrono::Duration::days(1); // Move to next day, else it will become an infinite loop
     }
 }
 
@@ -160,7 +162,6 @@ async fn gather_and_cross_reference(
                     //println!("Block Number: {}", block_number); // Print block number here
                     referendums_with_details.push(message);
                     if let polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Ongoing(_) = &ref_data {
-            if let polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Ongoing(_) = &ref_data {
                 if let polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard { vote, balance } = vote_detail {
                     let conviction = vote.0 % 128;
                     let (current_block_date, end_datetime) = calculate_end_datetime(block_number, current_block_number, conviction);
@@ -170,16 +171,19 @@ async fn gather_and_cross_reference(
                 }
 
     }
-}
                     let mut categorized_amounts: HashMap<&'static str, f64> = HashMap::new();
 
-                    for (&naive_date, &amount) in &lock_dates {
+                    // Step 2 & 3: Directly update categorized_amounts from lock_dates
+                    for (&naive_date, &locked_amount) in &lock_dates {
                         // Convert NaiveDateTime to DateTime<Utc>
                         let date_in_utc = DateTime::<Utc>::from_utc(naive_date, Utc);
-
                         let category = categorize_lock_period(date_in_utc);
+
+                        // Update the categorized_amounts if the new value is greater than the previous
                         let entry = categorized_amounts.entry(category).or_insert(0.0);
-                        *entry = amount;
+                        if locked_amount > *entry {
+                            *entry = locked_amount;
+                        }
                     }
                     for (category, &amount) in &categorized_amounts {
                         println!("{}: {:.10} DOT locked", category, amount);
