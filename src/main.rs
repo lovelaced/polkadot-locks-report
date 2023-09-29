@@ -1,4 +1,5 @@
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Utc};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::str::FromStr;
@@ -18,6 +19,18 @@ fn get_conviction_multiplier(conviction: u8) -> u32 {
         5 => 16,
         6 => 32,
         _ => panic!("Unknown conviction value: {}", conviction),
+    }
+}
+
+fn categorize_lock_period(end_date: DateTime<Utc>) -> &'static str {
+    let duration_from_now_in_days = (end_date - Utc::now()).num_days();
+    match duration_from_now_in_days {
+        0 => "Locked 0 Days",
+        1..=7 => "Locked 1-7 Days",
+        8..=14 => "Locked 8-14 Days",
+        15..=28 => "Locked 15-28 Days",
+        29..=60 => "Locked 29-60 Days",
+        _ => "Locked 60+ Days",
     }
 }
 
@@ -58,6 +71,8 @@ async fn gather_and_cross_reference(
     let class_locks = class_locks_data.0.as_slice();
 
     let mut blocks_sub = api.blocks().subscribe_finalized().await?;
+    let mut categorized_counts = HashMap::new();
+
     // Fetch the current block
     if let Some(block) = blocks_sub.next().await {
         let block = block?;
@@ -131,6 +146,8 @@ async fn gather_and_cross_reference(
     if let polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard { vote, .. } = vote_detail {
         let conviction = vote.0 % 128;
         let end_datetime = calculate_end_datetime(block_number, current_block_number, conviction);
+        let category = categorize_lock_period(end_datetime);
+        *categorized_counts.entry(category).or_insert(0) += 1;
         println!("End of Lock Period: {}", end_datetime);
     }
             }
@@ -138,6 +155,9 @@ async fn gather_and_cross_reference(
 
                 for info in &referendums_with_details {
                     println!("{}", info);
+                }
+                for (category, count) in &categorized_counts {
+                    println!("{}: {}", category, count);
                 }
             }
         }
@@ -191,7 +211,7 @@ async fn fetch_account_locks(
 
     match api.storage().at_latest().await?.fetch(&storage_query).await {
         Ok(Some(value)) => {
-        //    println!("[balances.lock] {:?}", value);
+            //    println!("[balances.lock] {:?}", value);
             Ok(value)
         }
         Ok(None) => Err(Box::new(subxt::Error::Other(
@@ -247,7 +267,7 @@ async fn fetch_class_locks(
 
     match api.storage().at_latest().await?.fetch(&storage_query).await {
         Ok(Some(value)) => {
-        //    println!("[Class locks data] {:?}", value);
+            //    println!("[Class locks data] {:?}", value);
             Ok(value)
         }
         Ok(None) => Err(Box::new(subxt::Error::Other(
@@ -283,7 +303,7 @@ async fn fetch_referendum_info(
 
     match api.storage().at_latest().await?.fetch(&storage_query).await {
         Ok(Some(value)) => {
-        //    println!("[Referendum Data] {:?}", value);
+            //    println!("[Referendum Data] {:?}", value);
             Ok(value)
         }
         Ok(None) => Err(Box::new(subxt::Error::Other(
@@ -309,7 +329,7 @@ async fn fetch_vesting(
 
     match api.storage().at_latest().await?.fetch(&storage_query).await {
         Ok(Some(value)) => {
-        //    println!("[Vesting Data] {:?}", value);
+            //    println!("[Vesting Data] {:?}", value);
             Ok(value)
         }
         Ok(None) => Err(Box::new(subxt::Error::Other(
