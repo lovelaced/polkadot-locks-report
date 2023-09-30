@@ -166,43 +166,45 @@ async fn gather_and_cross_reference(
                     //println!("Block Number: {}", block_number); // Print block number here
                     referendums_with_details.push(message);
                     if let polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Ongoing(_) = &ref_data {
-    if let polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard { vote, balance } = vote_detail {
-        let conviction = vote.0 % 128;
-        let (current_block_date, end_datetime) = calculate_end_datetime(block_number, current_block_number, conviction);
+                if let polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard { vote, balance } = vote_detail {
+    let conviction = vote.0 % 128;
+    let (current_block_date, end_datetime) = calculate_end_datetime(block_number, current_block_number, conviction);
 
-        let locked_amount_in_dot = *balance as f64 / PLANCKS_PER_DOT;
-        update_lock_dates(&mut locked_intervals, current_block_date, end_datetime, locked_amount_in_dot);
+    let locked_amount_in_dot = *balance as f64 / PLANCKS_PER_DOT;
+    update_lock_dates(&mut locked_intervals, current_block_date, end_datetime, locked_amount_in_dot);
+}
+
+let mut categorized_amounts: HashMap<&'static str, (f64, DateTime<Utc>)> = HashMap::new();
+
+// Directly update categorized_amounts from locked_intervals
+for interval in &locked_intervals {
+    let category = categorize_lock_period(interval.end_date);
+    let entry = categorized_amounts.entry(category).or_insert((0.0, Utc::now()));
+
+    if interval.amount > entry.0 || (f64::abs(interval.amount - entry.0) < f64::EPSILON && interval.end_date > entry.1) {
+        *entry = (interval.amount, interval.end_date);
     }
 }
-                }
 
-                let mut categorized_amounts: HashMap<&'static str, (f64, DateTime<Utc>)> =
-                    HashMap::new();
+let lock_order = ["Locked 0 Days", "Locked 1-7 Days", "Locked 8-14 Days", "Locked 15-28 Days", "Locked 29-60 Days", "Locked 60+ Days"];
+let mut max_lock_amount = 0.0;
 
-                // Directly update categorized_amounts from locked_intervals
-                for interval in &locked_intervals {
-                    let category = categorize_lock_period(interval.end_date);
-                    let entry = categorized_amounts
-                        .entry(category)
-                        .or_insert((0.0, Utc::now()));
-
-                    if interval.amount > entry.0
-                        || (f64::abs(interval.amount - entry.0) < f64::EPSILON
-                            && interval.end_date > entry.1)
-                    {
-                        *entry = (interval.amount, interval.end_date);
+for &lock_category in lock_order.iter().rev() {
+    if let Some(&(amount, end_date)) = categorized_amounts.get(lock_category) {
+        if amount > max_lock_amount {
+            max_lock_amount = amount;
+            println!("{}: {:.10} DOT locked until {}", lock_category, amount, end_date.format("%Y-%m-%d %H:%M:%S").to_string());
+        } else {
+            println!("{}: none", lock_category);
+        }
+    } else {
+        println!("{}: none", lock_category);
+    }
+}
+}
+                    for info in &referendums_with_details {
+                        println!("{}", info);
                     }
-                }
-                for (category, &(amount, end_date)) in &categorized_amounts {
-                    println!(
-                        "{}: {:.10} DOT locked until {}",
-                        category,
-                        amount,
-                        end_date.format("%Y-%m-%d %H:%M:%S").to_string()
-                    );
-                }
-                for info in &referendums_with_details {
-                    println!("{}", info);
                 }
             }
         }
