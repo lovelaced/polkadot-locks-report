@@ -188,7 +188,7 @@ async fn process_casting_votes(
 fn categorize_lock_period(end_date: DateTime<Utc>) -> &'static str {
     let duration_from_now_in_days = (end_date - Utc::now()).num_days();
     match duration_from_now_in_days {
-        0 => "Locked 0 Days",
+        d if d <= 0 => "Locked 0 Days",
         1..=7 => "Locked 1-7 Days",
         8..=14 => "Locked 8-14 Days",
         15..=28 => "Locked 15-28 Days",
