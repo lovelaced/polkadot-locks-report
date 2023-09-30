@@ -11,6 +11,11 @@ pub mod polkadot {}
 
 const BASE_LOCK_PERIOD: u32 = 28; // 28 days
 const PLANCKS_PER_DOT: f64 = 1e10;
+const MINUTES_PER_HOUR: i64 = 60;
+const HOURS_PER_DAY: i64 = 24;
+const SECONDS_PER_BLOCK: i64 = 6;
+const BLOCKS_TO_MINUTES_FACTOR: i64 = SECONDS_PER_BLOCK / 60; // This combines the constants
+const GENESIS_THRESHOLD: u32 = 9000000; // use a block number closer to genesis for early block time calculations
 
 fn get_conviction_multiplier(conviction: u8) -> u32 {
     match conviction {
@@ -21,6 +26,19 @@ fn get_conviction_multiplier(conviction: u8) -> u32 {
 
 fn plancks_to_dots<T: Into<f64>>(plancks: T) -> f64 {
     plancks.into() / PLANCKS_PER_DOT
+}
+
+fn create_datetime_from_ymd(
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+) -> DateTime<Utc> {
+    NaiveDate::from_ymd(year, month, day)
+        .and_hms(hour, minute, second)
+        .and_utc()
 }
 
 struct LockedInterval {
@@ -40,10 +58,6 @@ fn calculate_end_datetime(
     current_block: u32,
     conviction: u8,
 ) -> (DateTime<Utc>, DateTime<Utc>) {
-    const SECONDS_PER_BLOCK: i64 = 6;
-    const MINUTES_PER_HOUR: i64 = 60;
-    const HOURS_PER_DAY: i64 = 24;
-
     // The current_block_datetime is the current UTC time
     let current_block_datetime = Utc::now();
 
@@ -88,6 +102,7 @@ async fn gather_and_cross_reference(
 
     display_liquidity_ladder(&locked_intervals);
     display_lock_totals(api, key).await?;
+    display_vesting_info(api, key).await?;
 
     Ok(())
 }
@@ -532,10 +547,6 @@ fn calculate_vesting_datetimes(
     total_blocks_until_vested: u32,
     current_block: u32,
 ) -> (DateTime<Utc>, DateTime<Utc>) {
-    const SECONDS_PER_BLOCK: i64 = 6;
-    const MINUTES_PER_HOUR: i64 = 60;
-    const GENESIS_THRESHOLD: u32 = 9000000; // threshold to calculate from if we started on a low block number
-
     let base_datetime = if starting_block < GENESIS_THRESHOLD {
         // Use the datetime for block 1 if within the threshold
         NaiveDate::from_ymd(2020, 5, 26)
@@ -550,10 +561,6 @@ fn calculate_vesting_datetimes(
     let minutes_diff_start = (starting_block as i64) * SECONDS_PER_BLOCK / MINUTES_PER_HOUR;
     let start_datetime = base_datetime + Duration::minutes(minutes_diff_start);
 
-    // Ensure the start_datetime is not in the past
-    //    let current_datetime = Utc::now();
-    //  let start_datetime = std::cmp::max(start_datetime, current_datetime);
-
     // Calculate end datetime
     let minutes_diff_end =
         (total_blocks_until_vested) as i64 * SECONDS_PER_BLOCK / MINUTES_PER_HOUR;
@@ -561,8 +568,7 @@ fn calculate_vesting_datetimes(
 
     (start_datetime, end_datetime)
 }
-
-async fn print_vesting_info(
+async fn display_vesting_info(
     api: &OnlineClient<PolkadotConfig>,
     key: &utils::AccountId32,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -570,32 +576,36 @@ async fn print_vesting_info(
 
     let mut blocks_sub = api.blocks().subscribe_finalized().await?;
 
-    if let Some(block) = blocks_sub.next().await {
-        let block = block?;
-        let current_block_number = block.header().number;
+    match blocks_sub.next().await {
+        Some(block) => {
+            let block = block?;
+            let current_block_number = block.header().number;
 
-        println!("Detailed Vesting Schedule:");
+            println!("Detailed Vesting Schedule:");
 
-        for vesting_info in vesting_data.0.iter() {
-            // Convert block numbers to dates using your existing block-to-date conversion logic
-            let total_blocks_until_vested = vesting_info.locked / vesting_info.per_block as u128;
-            let end_block = vesting_info.starting_block + total_blocks_until_vested as u32;
-            let (start_date, end_date) = calculate_vesting_datetimes(
-                vesting_info.starting_block,
-                total_blocks_until_vested as u32,
-                current_block_number,
-            );
+            for vesting_info in vesting_data.0.iter() {
+                let total_blocks_until_vested =
+                    vesting_info.locked / vesting_info.per_block as u128;
+                let (start_date, end_date) = calculate_vesting_datetimes(
+                    vesting_info.starting_block,
+                    total_blocks_until_vested as u32,
+                    current_block_number,
+                );
 
-            let locked_in_dot = vesting_info.locked as f64 / PLANCKS_PER_DOT;
-            let per_block_in_dot = vesting_info.per_block as f64 / PLANCKS_PER_DOT;
+                let locked_in_dot = vesting_info.locked as f64 / PLANCKS_PER_DOT;
+                let per_block_in_dot = vesting_info.per_block as f64 / PLANCKS_PER_DOT;
 
-            println!(
-                "Start Date: {}, Locked: {:.10} DOT, Per Block: {:.10} DOT, End Date: {}",
-                start_date.format("%Y-%m-%d %H:%M:%S").to_string(),
-                locked_in_dot,
-                per_block_in_dot,
-                end_date.format("%Y-%m-%d %H:%M:%S").to_string()
-            );
+                println!(
+                    "Start Date: {}, Locked: {:.10} DOT, Per Block: {:.10} DOT, End Date: {}",
+                    start_date.format("%Y-%m-%d %H:%M:%S"),
+                    locked_in_dot,
+                    per_block_in_dot,
+                    end_date.format("%Y-%m-%d %H:%M:%S")
+                );
+            }
+        }
+        None => {
+            println!("No block data available.");
         }
     }
 
@@ -641,9 +651,6 @@ async fn process_address(
     }
     if let Err(e) = fetch_account_locks(&api, &public_key_bytes).await {
         eprintln!("[Error] Failed to fetch locked balance: {}", e);
-    }
-    if let Err(e) = print_vesting_info(&api, &public_key_bytes).await {
-        eprintln!("[Error] Failed to fetch vesting balance: {}", e);
     }
     if let Err(e) = gather_and_cross_reference(&api, &public_key_bytes).await {
         eprintln!("[Error] Failed to xr: {}", e);
