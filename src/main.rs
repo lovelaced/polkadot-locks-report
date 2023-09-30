@@ -9,27 +9,15 @@ use subxt::{Error, OnlineClient, PolkadotConfig};
 #[subxt::subxt(runtime_metadata_path = "./artifacts/polkadot_metadata_small.scale")]
 pub mod polkadot {}
 
+const BASE_LOCK_PERIOD: u32 = 28; // 28 days
+const PLANCKS_PER_DOT: f64 = 1e10;
+
 fn get_conviction_multiplier(conviction: u8) -> u32 {
     match conviction {
         0..=6 => 1 << conviction,
         _ => panic!("Unknown conviction value: {}", conviction),
     }
 }
-
-fn categorize_lock_period(end_date: DateTime<Utc>) -> &'static str {
-    let duration_from_now_in_days = (end_date - Utc::now()).num_days();
-    match duration_from_now_in_days {
-        0 => "Locked 0 Days",
-        1..=7 => "Locked 1-7 Days",
-        8..=14 => "Locked 8-14 Days",
-        15..=28 => "Locked 15-28 Days",
-        29..=60 => "Locked 29-60 Days",
-        _ => "Locked 60+ Days",
-    }
-}
-
-const BASE_LOCK_PERIOD: u32 = 28; // 28 days
-const PLANCKS_PER_DOT: f64 = 1e10;
 
 fn plancks_to_dots<T: Into<f64>>(plancks: T) -> f64 {
     plancks.into() / PLANCKS_PER_DOT
@@ -56,20 +44,21 @@ fn calculate_end_datetime(
     const MINUTES_PER_HOUR: i64 = 60;
     const HOURS_PER_DAY: i64 = 24;
 
-    let base_datetime = NaiveDate::from_ymd_opt(2023, 8, 25)
-        .expect("Invalid date")
-        .and_hms_opt(13, 1, 0)
-        .expect("Invalid time")
-        .and_utc();
+    // The current_block_datetime is the current UTC time
+    let current_block_datetime = Utc::now();
 
-    let minutes_diff = (current_block - base_block) as i64 * SECONDS_PER_BLOCK / MINUTES_PER_HOUR;
-    let current_block_datetime = base_datetime + Duration::minutes(minutes_diff);
+    // Calculate the difference in blocks and convert it into a time difference
+    let block_diff = (current_block - base_block) as i64;
+    let time_diff = Duration::seconds(block_diff * SECONDS_PER_BLOCK);
+
+    // Subtracting the time difference from the current time gives us the base_block_datetime
+    let base_block_datetime = current_block_datetime - time_diff;
 
     let conviction_multiplier = get_conviction_multiplier(conviction) as i64;
     let lock_period_in_minutes =
         BASE_LOCK_PERIOD as i64 * conviction_multiplier * HOURS_PER_DAY * MINUTES_PER_HOUR;
 
-    let end_datetime = current_block_datetime + Duration::minutes(lock_period_in_minutes);
+    let end_datetime = base_block_datetime + Duration::minutes(lock_period_in_minutes);
     (current_block_datetime, end_datetime)
 }
 
@@ -93,28 +82,207 @@ async fn gather_and_cross_reference(
     let class_locks_data = fetch_class_locks(api, key).await?;
     let class_locks = class_locks_data.0.as_slice();
 
+    let current_block_number = fetch_current_block_number(api).await?;
+    let mut locked_intervals =
+        process_class_locks(api, key, class_locks, current_block_number).await?;
+
+    display_liquidity_ladder(&locked_intervals);
+    display_lock_totals(api, key).await?;
+
+    Ok(())
+}
+
+async fn fetch_current_block_number(
+    api: &OnlineClient<PolkadotConfig>,
+) -> Result<u32, Box<dyn std::error::Error>> {
     let mut blocks_sub = api.blocks().subscribe_finalized().await?;
+    if let Some(block) = blocks_sub.next().await {
+        Ok(block?.header().number)
+    } else {
+        Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "Failed to fetch block.",
+        )))
+    }
+}
+
+async fn process_class_locks(
+    api: &OnlineClient<PolkadotConfig>,
+    key: &utils::AccountId32,
+    class_locks: &[(u16, u128)],
+    current_block_number: u32,
+) -> Result<Vec<LockedInterval>, Box<dyn std::error::Error>> {
     let mut locked_intervals: Vec<LockedInterval> = Vec::new();
 
-    // Fetch the current block
-    if let Some(block) = blocks_sub.next().await {
-        let block = block?;
-        let current_block_number = block.header().number;
+    for class_lock in class_locks {
+        let votes_data = fetch_voting(api, key, class_lock.0).await?;
 
-        for class_lock in class_locks {
-            let votes_data = fetch_voting(api, key, class_lock.0).await?;
+        if let polkadot::runtime_types::pallet_conviction_voting::vote::Voting::Casting(casting) =
+            votes_data
+        {
+            process_casting_votes(
+                api,
+                key,
+                &casting,
+                current_block_number,
+                &mut locked_intervals,
+            )
+            .await?;
+        }
+    }
 
-            if let polkadot::runtime_types::pallet_conviction_voting::vote::Voting::Casting(
-                casting,
-            ) = votes_data
-            {
-                //let mut referendums_with_details = vec![];
+    Ok(locked_intervals)
+}
 
-                for (ref_num, vote_detail) in casting.votes.0.as_slice().iter() {
-                    let ref_data = fetch_referendum_info(api, key, *ref_num).await?;
+async fn process_casting_votes(
+    api: &OnlineClient<PolkadotConfig>,
+    key: &utils::AccountId32,
+    casting: &polkadot::runtime_types::pallet_conviction_voting::vote::Casting<u128, u32, u32>,
+    current_block_number: u32,
+    locked_intervals: &mut Vec<LockedInterval>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (ref_num, vote_detail) in casting.votes.0.as_slice().iter() {
+        let ref_data = fetch_referendum_info(api, key, *ref_num).await?;
 
-                    let (message, block_number) = match &ref_data {
-                    polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Ongoing(status) => {
+        let block_number = match &ref_data {
+            polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Ongoing(status) => {
+                status.submitted
+            }
+            polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Approved(
+                block_number,
+                ..,
+            ) => *block_number,
+            polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Rejected(
+                block_number,
+                ..,
+            ) => *block_number,
+            polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Killed(
+                block_number,
+                ..,
+            ) => *block_number,
+            polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Cancelled(
+                block_number,
+                ..,
+            ) => *block_number,
+            polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::TimedOut(
+                block_number,
+                ..,
+            ) => *block_number,
+            _ => 0,
+        };
+
+        if block_number != 0 {
+            // Make sure we have a valid block_number
+            if let polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard { vote, balance } = vote_detail {
+                let conviction = vote.0 % 128;
+                let (base_block_date, end_datetime) = calculate_end_datetime(block_number, current_block_number, conviction);
+                let locked_amount_in_dot = *balance as f64 / 1e10;
+                update_lock_dates(locked_intervals, base_block_date, end_datetime, locked_amount_in_dot);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn categorize_lock_period(end_date: DateTime<Utc>) -> &'static str {
+    let duration_from_now_in_days = (end_date - Utc::now()).num_days();
+    match duration_from_now_in_days {
+        0 => "Locked 0 Days",
+        1..=7 => "Locked 1-7 Days",
+        8..=14 => "Locked 8-14 Days",
+        15..=28 => "Locked 15-28 Days",
+        29..=60 => "Locked 29-60 Days",
+        _ => "Locked 60+ Days",
+    }
+}
+
+fn display_liquidity_ladder(locked_intervals: &[LockedInterval]) {
+    let mut categorized_amounts: HashMap<&'static str, (f64, DateTime<Utc>)> = HashMap::new();
+
+    for interval in locked_intervals {
+        let category = categorize_lock_period(interval.end_date);
+        let entry = categorized_amounts
+            .entry(category)
+            .or_insert((0.0, Utc::now()));
+        if interval.amount > entry.0
+            || (f64::abs(interval.amount - entry.0) < f64::EPSILON && interval.end_date > entry.1)
+        {
+            *entry = (interval.amount, interval.end_date);
+        }
+    }
+
+    let lock_order = [
+        "Locked 0 Days",
+        "Locked 1-7 Days",
+        "Locked 8-14 Days",
+        "Locked 15-28 Days",
+        "Locked 29-60 Days",
+        "Locked 60+ Days",
+    ];
+    let mut max_lock_amount = 0.0;
+    println!("Liquidity Ladder:");
+    for &lock_category in lock_order.iter().rev() {
+        if let Some(&(amount, end_date)) = categorized_amounts.get(lock_category) {
+            if amount > max_lock_amount {
+                max_lock_amount = amount;
+                println!(
+                    "{}: {:.10} DOT locked until {}",
+                    lock_category,
+                    amount,
+                    end_date.format("%Y-%m-%d %H:%M:%S").to_string()
+                );
+            } else {
+                println!("{}: none", lock_category);
+            }
+        } else {
+            println!("{}: none", lock_category);
+        }
+    }
+}
+
+async fn display_lock_totals(
+    api: &OnlineClient<PolkadotConfig>,
+    key: &utils::AccountId32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let locks_data = fetch_account_locks(api, key).await?;
+    let locks = locks_data.0.as_slice();
+
+    println!("Lock totals:");
+    for lock in locks {
+        if let Ok(id_str) = String::from_utf8(lock.id.to_vec()) {
+            let amount_in_dot = lock.amount as f64 / 1e10;
+            println!("Lock ID: {}, Amount: {:.10} DOT", id_str, amount_in_dot);
+        } else {
+            println!("Failed to convert lock id to string");
+        }
+    }
+
+    Ok(())
+}
+
+async fn gather_detailed_vote_info(
+    api: &OnlineClient<PolkadotConfig>,
+    key: &utils::AccountId32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let class_locks_data = fetch_class_locks(api, key).await?;
+    let class_locks = class_locks_data.0.as_slice();
+
+    for class_lock in class_locks {
+        let votes_data = fetch_voting(api, key, class_lock.0).await?;
+
+        if let polkadot::runtime_types::pallet_conviction_voting::vote::Voting::Casting(casting) =
+            votes_data
+        {
+            let mut referendums_with_details = vec![];
+
+            for (ref_num, vote_detail) in casting.votes.0.as_slice().iter() {
+                let ref_data = fetch_referendum_info(api, key, *ref_num).await?;
+
+                let (message, block_number) = match &ref_data {
+                    polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Ongoing(
+                        status,
+                    ) => {
                         let ayes = status.tally.ayes as f64 / 1e10;
                         let nays = status.tally.nays as f64 / 1e10;
 
@@ -142,101 +310,54 @@ async fn gather_and_cross_reference(
                             _ => format!("Referendum: {}, unknown conviction, Tally: Ayes: {:.10} DOT, Nays: {:.10} DOT", ref_num, ayes, nays)
                         };
                         (detail, status.submitted)
-                    },
-                    polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Approved(block_number, ..) => {
-                        (format!("Referendum: {}, was accepted.", ref_num), *block_number)
-                    },
-                    polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Rejected(block_number, ..) => {
-                        (format!("Referendum: {}, was rejected.", ref_num), *block_number)
-                    },
-                    polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Killed(block_number, ..) => {
-                        (format!("Referendum: {}, was killed.", ref_num), *block_number)
-                    },
-                    polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Cancelled(block_number, ..) => {
-                        (format!("Referendum: {}, was cancelled.", ref_num), *block_number)
-                    },
-                    polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::TimedOut(block_number, ..) => {
-                        (format!("Referendum: {}, timed out.", ref_num), *block_number)
-                    },
-                    _ => {
-                        (format!("Referendum: {}, had unknown status.", ref_num), 0)
                     }
+                    polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Approved(
+                        block_number,
+                        ..,
+                    ) => (
+                        format!("Referendum: {}, was accepted.", ref_num),
+                        *block_number,
+                    ),
+                    polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Rejected(
+                        block_number,
+                        ..,
+                    ) => (
+                        format!("Referendum: {}, was rejected.", ref_num),
+                        *block_number,
+                    ),
+                    polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Killed(
+                        block_number,
+                        ..,
+                    ) => (
+                        format!("Referendum: {}, was killed.", ref_num),
+                        *block_number,
+                    ),
+                    polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Cancelled(
+                        block_number,
+                        ..,
+                    ) => (
+                        format!("Referendum: {}, was cancelled.", ref_num),
+                        *block_number,
+                    ),
+                    polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::TimedOut(
+                        block_number,
+                        ..,
+                    ) => (
+                        format!("Referendum: {}, timed out.", ref_num),
+                        *block_number,
+                    ),
+                    _ => (format!("Referendum: {}, had unknown status.", ref_num), 0),
                 };
 
-                    //println!("Block Number: {}", block_number); // Print block number here
-                    //referendums_with_details.push(message);
-                    if let polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Ongoing(_) = &ref_data {
-                if let polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard { vote, balance } = vote_detail {
-                    let conviction = vote.0 % 128;
-                    let (current_block_date, end_datetime) = calculate_end_datetime(block_number, current_block_number, conviction);
-                    let locked_amount_in_dot = *balance as f64 / PLANCKS_PER_DOT;
-                    update_lock_dates(&mut locked_intervals, current_block_date, end_datetime, locked_amount_in_dot);
-                }
+                //println!("Block Number: {}", block_number); // Print block number here
+                referendums_with_details.push(message);
             }
-                }
-            }
-        }
-
-        // Now, after all class_locks have been processed, categorize and print the locks.
-        let mut categorized_amounts: HashMap<&'static str, (f64, DateTime<Utc>)> = HashMap::new();
-
-        for interval in &locked_intervals {
-            let category = categorize_lock_period(interval.end_date);
-            let entry = categorized_amounts
-                .entry(category)
-                .or_insert((0.0, Utc::now()));
-            if interval.amount > entry.0
-                || (f64::abs(interval.amount - entry.0) < f64::EPSILON
-                    && interval.end_date > entry.1)
-            {
-                *entry = (interval.amount, interval.end_date);
-            }
-        }
-
-        let lock_order = [
-            "Locked 0 Days",
-            "Locked 1-7 Days",
-            "Locked 8-14 Days",
-            "Locked 15-28 Days",
-            "Locked 29-60 Days",
-            "Locked 60+ Days",
-        ];
-        let mut max_lock_amount = 0.0;
-        println!("Liquidity Ladder:");
-        for &lock_category in lock_order.iter().rev() {
-            if let Some(&(amount, end_date)) = categorized_amounts.get(lock_category) {
-                if amount > max_lock_amount {
-                    max_lock_amount = amount;
-                    println!(
-                        "{}: {:.10} DOT locked until {}",
-                        lock_category,
-                        amount,
-                        end_date.format("%Y-%m-%d %H:%M:%S").to_string()
-                    );
-                } else {
-                    println!("{}: none", lock_category);
-                }
-            } else {
-                println!("{}: none", lock_category);
+            for info in &referendums_with_details {
+                println!("{}", info);
             }
         }
     }
-    //for info in &referendums_with_details {
-    //      println!("{}", info);
-    //  }
 
-    let locks_data = fetch_account_locks(api, &key).await?;
-    let locks = locks_data.0.as_slice();
-    // Access the locks inside the WeakBoundedVec and print them
-    println!("Lock totals:");
-    for lock in locks {
-        if let Ok(id_str) = String::from_utf8(lock.id.to_vec()) {
-            let amount_in_dot = lock.amount as f64 / 1e10;
-            println!("Lock ID: {}, Amount: {:.10} DOT", id_str, amount_in_dot);
-        } else {
-            println!("Failed to convert lock id to string");
-        }
-    }
     Ok(())
 }
 
@@ -412,21 +533,28 @@ fn calculate_vesting_datetimes(
 ) -> (DateTime<Utc>, DateTime<Utc>) {
     const SECONDS_PER_BLOCK: i64 = 6;
     const MINUTES_PER_HOUR: i64 = 60;
+    const GENESIS_THRESHOLD: u32 = 9000000; // threshold to calculate from if we started on a low block number
 
-    let base_datetime = NaiveDate::from_ymd_opt(2023, 8, 25)
-        .expect("Invalid date")
-        .and_hms_opt(13, 1, 0)
-        .expect("Invalid time")
-        .and_utc();
+    let base_datetime = if starting_block < GENESIS_THRESHOLD {
+        // Use the datetime for block 1 if within the threshold
+        NaiveDate::from_ymd(2020, 5, 26)
+            .and_hms(15, 36, 18)
+            .and_utc()
+    } else {
+        // Use the original hardcoded datetime for later blocks
+        NaiveDate::from_ymd(2023, 8, 25).and_hms(13, 1, 0).and_utc()
+    };
 
-    // Calculate difference in minutes between starting_block and base_block
-    let minutes_diff_start = (starting_block as i64 - current_block as i64) * SECONDS_PER_BLOCK / MINUTES_PER_HOUR;
-    
+    // Calculate difference in minutes between starting_block and current_block
+    let minutes_diff_start =
+        (starting_block as i64 - current_block as i64) * SECONDS_PER_BLOCK / MINUTES_PER_HOUR;
+
     // This takes care of the potential past date
     let start_datetime = base_datetime + Duration::minutes(minutes_diff_start);
 
     // Calculate end datetime
-    let minutes_diff_end = (total_blocks_until_vested) as i64 * SECONDS_PER_BLOCK / MINUTES_PER_HOUR;
+    let minutes_diff_end =
+        (total_blocks_until_vested) as i64 * SECONDS_PER_BLOCK / MINUTES_PER_HOUR;
     let end_datetime = start_datetime + Duration::minutes(minutes_diff_end);
 
     (start_datetime, end_datetime)
