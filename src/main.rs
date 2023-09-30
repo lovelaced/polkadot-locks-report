@@ -80,6 +80,7 @@ fn update_lock_dates(
 
         current_date = current_date + chrono::Duration::days(1); // Move to next day, else it will become an infinite loop
     }
+    //println!("lock dates: {:?}", lock_dates);
 }
 
 async fn gather_and_cross_reference(
@@ -138,7 +139,7 @@ async fn gather_and_cross_reference(
                             _ => format!("Referendum: {}, unknown conviction, Tally: Ayes: {:.10} DOT, Nays: {:.10} DOT", ref_num, ayes, nays)
                         };
                         (detail, status.submitted)
-                    },
+                    }, 
                     polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Approved(block_number, ..) => {
                         (format!("Referendum: {}, was accepted.", ref_num), *block_number)
                     },
@@ -153,10 +154,10 @@ async fn gather_and_cross_reference(
                     },
                     polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::TimedOut(block_number, ..) => {
                         (format!("Referendum: {}, timed out.", ref_num), *block_number)
-                    },
+                    }, 
                     _ => {
                         (format!("Referendum: {}, had unknown status.", ref_num), 0)
-                    }
+                    } 
                 };
 
                     //println!("Block Number: {}", block_number); // Print block number here
@@ -171,6 +172,8 @@ async fn gather_and_cross_reference(
                 }
 
     }
+                }
+
                     let mut categorized_amounts: HashMap<&'static str, f64> = HashMap::new();
 
                     // Step 2 & 3: Directly update categorized_amounts from lock_dates
@@ -188,8 +191,6 @@ async fn gather_and_cross_reference(
                     for (category, &amount) in &categorized_amounts {
                         println!("{}: {:.10} DOT locked", category, amount);
                     }
-                }
-
                 for info in &referendums_with_details {
                     println!("{}", info);
                 }
