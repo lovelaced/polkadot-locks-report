@@ -35,6 +35,18 @@ fn plancks_to_dots<T: Into<f64>>(plancks: T) -> f64 {
     plancks.into() / PLANCKS_PER_DOT
 }
 
+struct LockedInterval {
+    start_date: DateTime<Utc>,
+    end_date: DateTime<Utc>,
+    amount: f64,
+}
+
+impl LockedInterval {
+    fn overlaps_with(&self, start: &DateTime<Utc>, end: &DateTime<Utc>) -> bool {
+        !(self.end_date < *start || self.start_date > *end)
+    }
+}
+
 fn calculate_end_datetime(
     base_block: u32,
     current_block: u32,
@@ -61,26 +73,17 @@ fn calculate_end_datetime(
     (current_block_datetime, end_datetime)
 }
 
-// Helper function to calculate and update lock dates
 fn update_lock_dates(
-    lock_dates: &mut HashMap<NaiveDateTime, f64>,
+    locked_intervals: &mut Vec<LockedInterval>,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
     amount: f64,
 ) {
-    let mut current_date = start.date();
-    let end_date = end.date();
-
-    while current_date <= end_date {
-        // Convert Date<Utc> to NaiveDateTime
-        let naive_datetime = current_date.and_hms(0, 0, 0).naive_utc();
-
-        let existing_amount = lock_dates.entry(naive_datetime).or_insert(0.0);
-        *existing_amount = f64::max(*existing_amount, amount); // Use 'amount' here
-
-        current_date = current_date + chrono::Duration::days(1); // Move to next day, else it will become an infinite loop
-    }
-    //println!("lock dates: {:?}", lock_dates);
+    locked_intervals.push(LockedInterval {
+        start_date: start,
+        end_date: end,
+        amount,
+    });
 }
 
 async fn gather_and_cross_reference(
@@ -91,7 +94,7 @@ async fn gather_and_cross_reference(
     let class_locks = class_locks_data.0.as_slice();
 
     let mut blocks_sub = api.blocks().subscribe_finalized().await?;
-    let mut lock_dates: HashMap<NaiveDateTime, f64> = HashMap::new();
+    let mut locked_intervals: Vec<LockedInterval> = Vec::new();
 
     // Fetch the current block
     if let Some(block) = blocks_sub.next().await {
@@ -139,7 +142,7 @@ async fn gather_and_cross_reference(
                             _ => format!("Referendum: {}, unknown conviction, Tally: Ayes: {:.10} DOT, Nays: {:.10} DOT", ref_num, ayes, nays)
                         };
                         (detail, status.submitted)
-                    }, 
+                    },
                     polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Approved(block_number, ..) => {
                         (format!("Referendum: {}, was accepted.", ref_num), *block_number)
                     },
@@ -154,43 +157,50 @@ async fn gather_and_cross_reference(
                     },
                     polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::TimedOut(block_number, ..) => {
                         (format!("Referendum: {}, timed out.", ref_num), *block_number)
-                    }, 
+                    },
                     _ => {
                         (format!("Referendum: {}, had unknown status.", ref_num), 0)
-                    } 
+                    }
                 };
 
                     //println!("Block Number: {}", block_number); // Print block number here
                     referendums_with_details.push(message);
                     if let polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Ongoing(_) = &ref_data {
-                if let polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard { vote, balance } = vote_detail {
-                    let conviction = vote.0 % 128;
-                    let (current_block_date, end_datetime) = calculate_end_datetime(block_number, current_block_number, conviction);
+    if let polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard { vote, balance } = vote_detail {
+        let conviction = vote.0 % 128;
+        let (current_block_date, end_datetime) = calculate_end_datetime(block_number, current_block_number, conviction);
 
-                    let locked_amount_in_dot = *balance as f64 / PLANCKS_PER_DOT;
-                    update_lock_dates(&mut lock_dates, current_block_date, end_datetime, locked_amount_in_dot);
-                }
-
+        let locked_amount_in_dot = *balance as f64 / PLANCKS_PER_DOT;
+        update_lock_dates(&mut locked_intervals, current_block_date, end_datetime, locked_amount_in_dot);
     }
+}
                 }
 
-                    let mut categorized_amounts: HashMap<&'static str, f64> = HashMap::new();
+                let mut categorized_amounts: HashMap<&'static str, (f64, DateTime<Utc>)> =
+                    HashMap::new();
 
-                    // Step 2 & 3: Directly update categorized_amounts from lock_dates
-                    for (&naive_date, &locked_amount) in &lock_dates {
-                        // Convert NaiveDateTime to DateTime<Utc>
-                        let date_in_utc = DateTime::<Utc>::from_utc(naive_date, Utc);
-                        let category = categorize_lock_period(date_in_utc);
+                // Directly update categorized_amounts from locked_intervals
+                for interval in &locked_intervals {
+                    let category = categorize_lock_period(interval.end_date);
+                    let entry = categorized_amounts
+                        .entry(category)
+                        .or_insert((0.0, Utc::now()));
 
-                        // Update the categorized_amounts if the new value is greater than the previous
-                        let entry = categorized_amounts.entry(category).or_insert(0.0);
-                        if locked_amount > *entry {
-                            *entry = locked_amount;
-                        }
+                    if interval.amount > entry.0
+                        || (f64::abs(interval.amount - entry.0) < f64::EPSILON
+                            && interval.end_date > entry.1)
+                    {
+                        *entry = (interval.amount, interval.end_date);
                     }
-                    for (category, &amount) in &categorized_amounts {
-                        println!("{}: {:.10} DOT locked", category, amount);
-                    }
+                }
+                for (category, &(amount, end_date)) in &categorized_amounts {
+                    println!(
+                        "{}: {:.10} DOT locked until {}",
+                        category,
+                        amount,
+                        end_date.format("%Y-%m-%d %H:%M:%S").to_string()
+                    );
+                }
                 for info in &referendums_with_details {
                     println!("{}", info);
                 }
