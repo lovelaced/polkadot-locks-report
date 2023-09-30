@@ -202,7 +202,7 @@ async fn gather_and_cross_reference(
             "Locked 60+ Days",
         ];
         let mut max_lock_amount = 0.0;
-
+        println!("Liquidity Ladder:");
         for &lock_category in lock_order.iter().rev() {
             if let Some(&(amount, end_date)) = categorized_amounts.get(lock_category) {
                 if amount > max_lock_amount {
@@ -228,6 +228,7 @@ async fn gather_and_cross_reference(
     let locks_data = fetch_account_locks(api, &key).await?;
     let locks = locks_data.0.as_slice();
     // Access the locks inside the WeakBoundedVec and print them
+    println!("Lock totals:");
     for lock in locks {
         if let Ok(id_str) = String::from_utf8(lock.id.to_vec()) {
             let amount_in_dot = lock.amount as f64 / 1e10;
@@ -329,7 +330,7 @@ async fn fetch_class_locks(
 
     match api.storage().at_latest().await?.fetch(&storage_query).await {
         Ok(Some(value)) => {
-                //println!("[Class locks data] {:?}", value);
+            //println!("[Class locks data] {:?}", value);
             Ok(value)
         }
         Ok(None) => Err(Box::new(subxt::Error::Other(
@@ -391,7 +392,7 @@ async fn fetch_vesting(
 
     match api.storage().at_latest().await?.fetch(&storage_query).await {
         Ok(Some(value)) => {
-            println!("[Vesting Data] {:?}", value);
+            //println!("[Vesting Data] {:?}", value);
             Ok(value)
         }
         Ok(None) => Err(Box::new(subxt::Error::Other(
@@ -402,6 +403,73 @@ async fn fetch_vesting(
             Err(Box::new(e))
         }
     }
+}
+
+fn calculate_vesting_datetimes(
+    starting_block: u32,
+    total_blocks_until_vested: u32,
+    current_block: u32,
+) -> (DateTime<Utc>, DateTime<Utc>) {
+    const SECONDS_PER_BLOCK: i64 = 6;
+    const MINUTES_PER_HOUR: i64 = 60;
+
+    let base_datetime = NaiveDate::from_ymd_opt(2023, 8, 25)
+        .expect("Invalid date")
+        .and_hms_opt(13, 1, 0)
+        .expect("Invalid time")
+        .and_utc();
+
+    // Calculate difference in minutes between starting_block and base_block
+    let minutes_diff_start = (starting_block as i64 - current_block as i64) * SECONDS_PER_BLOCK / MINUTES_PER_HOUR;
+    
+    // This takes care of the potential past date
+    let start_datetime = base_datetime + Duration::minutes(minutes_diff_start);
+
+    // Calculate end datetime
+    let minutes_diff_end = (total_blocks_until_vested) as i64 * SECONDS_PER_BLOCK / MINUTES_PER_HOUR;
+    let end_datetime = start_datetime + Duration::minutes(minutes_diff_end);
+
+    (start_datetime, end_datetime)
+}
+
+async fn print_vesting_info(
+    api: &OnlineClient<PolkadotConfig>,
+    key: &utils::AccountId32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let vesting_data = fetch_vesting(api, key).await?;
+
+    let mut blocks_sub = api.blocks().subscribe_finalized().await?;
+
+    if let Some(block) = blocks_sub.next().await {
+        let block = block?;
+        let current_block_number = block.header().number;
+
+        println!("Detailed Vesting Schedule:");
+
+        for vesting_info in vesting_data.0.iter() {
+            // Convert block numbers to dates using your existing block-to-date conversion logic
+            let total_blocks_until_vested = vesting_info.locked / vesting_info.per_block as u128;
+            let end_block = vesting_info.starting_block + total_blocks_until_vested as u32;
+            let (start_date, end_date) = calculate_vesting_datetimes(
+                vesting_info.starting_block,
+                total_blocks_until_vested as u32,
+                current_block_number,
+            );
+
+            let locked_in_dot = vesting_info.locked as f64 / PLANCKS_PER_DOT;
+            let per_block_in_dot = vesting_info.per_block as f64 / PLANCKS_PER_DOT;
+
+            println!(
+                "Start Date: {}, Locked: {:.10} DOT, Per Block: {:.10} DOT, End Date: {}",
+                start_date.format("%Y-%m-%d %H:%M:%S").to_string(),
+                locked_in_dot,
+                per_block_in_dot,
+                end_date.format("%Y-%m-%d %H:%M:%S").to_string()
+            );
+        }
+    }
+
+    Ok(())
 }
 
 #[tokio::main]
@@ -444,14 +512,9 @@ async fn process_address(
     if let Err(e) = fetch_account_locks(&api, &public_key_bytes).await {
         eprintln!("[Error] Failed to fetch locked balance: {}", e);
     }
-    //
-    //    println!("[Vesting Balance] Fetching...");
-    if let Err(e) = fetch_vesting(&api, &public_key_bytes).await {
-            eprintln!("[Error] Failed to fetch vesting balance: {}", e);
-        }
-    //    if let Err(e) = fetch_class_locks(&api, public_key_bytes.clone()).await {
-    //        eprintln!("[Error] Failed to fetch class locks: {}", e);
-    //    }
+    if let Err(e) = print_vesting_info(&api, &public_key_bytes).await {
+        eprintln!("[Error] Failed to fetch vesting balance: {}", e);
+    }
     if let Err(e) = gather_and_cross_reference(&api, &public_key_bytes).await {
         eprintln!("[Error] Failed to xr: {}", e);
     }
