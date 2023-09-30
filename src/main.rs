@@ -202,9 +202,8 @@ fn display_liquidity_ladder(locked_intervals: &[LockedInterval]) {
 
     for interval in locked_intervals {
         let category = categorize_lock_period(interval.end_date);
-        let entry = categorized_amounts
-            .entry(category)
-            .or_insert((0.0, Utc::now()));
+        let entry = categorized_amounts.entry(category).or_default();
+
         if interval.amount > entry.0
             || (f64::abs(interval.amount - entry.0) < f64::EPSILON && interval.end_date > entry.1)
         {
@@ -221,23 +220,25 @@ fn display_liquidity_ladder(locked_intervals: &[LockedInterval]) {
         "Locked 60+ Days",
     ];
     let mut max_lock_amount = 0.0;
+
     println!("Liquidity Ladder:");
     for &lock_category in lock_order.iter().rev() {
-        if let Some(&(amount, end_date)) = categorized_amounts.get(lock_category) {
-            if amount > max_lock_amount {
-                max_lock_amount = amount;
-                println!(
-                    "{}: {:.10} DOT locked until {}",
-                    lock_category,
-                    amount,
-                    end_date.format("%Y-%m-%d %H:%M:%S").to_string()
-                );
-            } else {
-                println!("{}: none", lock_category);
-            }
-        } else {
-            println!("{}: none", lock_category);
-        }
+        categorized_amounts.get(lock_category).map_or_else(
+            || println!("{}: none", lock_category),
+            |&(amount, end_date)| {
+                if amount > max_lock_amount {
+                    max_lock_amount = amount;
+                    println!(
+                        "{}: {:.10} DOT locked until {}",
+                        lock_category,
+                        amount,
+                        end_date.format("%Y-%m-%d %H:%M:%S")
+                    );
+                } else {
+                    println!("{}: none", lock_category);
+                }
+            },
+        );
     }
 }
 
@@ -545,12 +546,13 @@ fn calculate_vesting_datetimes(
         NaiveDate::from_ymd(2023, 8, 25).and_hms(13, 1, 0).and_utc()
     };
 
-    // Calculate difference in minutes between starting_block and current_block
-    let minutes_diff_start =
-        (starting_block as i64 - current_block as i64) * SECONDS_PER_BLOCK / MINUTES_PER_HOUR;
-
-    // This takes care of the potential past date
+    // Calculate difference in minutes between base_datetime and starting_block
+    let minutes_diff_start = (starting_block as i64) * SECONDS_PER_BLOCK / MINUTES_PER_HOUR;
     let start_datetime = base_datetime + Duration::minutes(minutes_diff_start);
+
+    // Ensure the start_datetime is not in the past
+    //    let current_datetime = Utc::now();
+    //  let start_datetime = std::cmp::max(start_datetime, current_datetime);
 
     // Calculate end datetime
     let minutes_diff_end =
