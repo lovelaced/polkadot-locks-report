@@ -167,48 +167,63 @@ async fn gather_and_cross_reference(
                     //referendums_with_details.push(message);
                     if let polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Ongoing(_) = &ref_data {
                 if let polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard { vote, balance } = vote_detail {
-    let conviction = vote.0 % 128;
-    let (current_block_date, end_datetime) = calculate_end_datetime(block_number, current_block_number, conviction);
-
-    let locked_amount_in_dot = *balance as f64 / PLANCKS_PER_DOT;
-    update_lock_dates(&mut locked_intervals, current_block_date, end_datetime, locked_amount_in_dot);
-}
-
-let mut categorized_amounts: HashMap<&'static str, (f64, DateTime<Utc>)> = HashMap::new();
-
-// Directly update categorized_amounts from locked_intervals
-for interval in &locked_intervals {
-    let category = categorize_lock_period(interval.end_date);
-    let entry = categorized_amounts.entry(category).or_insert((0.0, Utc::now()));
-
-    if interval.amount > entry.0 || (f64::abs(interval.amount - entry.0) < f64::EPSILON && interval.end_date > entry.1) {
-        *entry = (interval.amount, interval.end_date);
-    }
-}
-
-let lock_order = ["Locked 0 Days", "Locked 1-7 Days", "Locked 8-14 Days", "Locked 15-28 Days", "Locked 29-60 Days", "Locked 60+ Days"];
-let mut max_lock_amount = 0.0;
-
-for &lock_category in lock_order.iter().rev() {
-    if let Some(&(amount, end_date)) = categorized_amounts.get(lock_category) {
-        if amount > max_lock_amount {
-            max_lock_amount = amount;
-            println!("{}: {:.10} DOT locked until {}", lock_category, amount, end_date.format("%Y-%m-%d %H:%M:%S").to_string());
-        } else {
-            println!("{}: none", lock_category);
-        }
-    } else {
-        println!("{}: none", lock_category);
-    }
-}
-}
-                    //for info in &referendums_with_details {
-                  //      println!("{}", info);
-                  //  }
+                    let conviction = vote.0 % 128;
+                    let (current_block_date, end_datetime) = calculate_end_datetime(block_number, current_block_number, conviction);
+                    let locked_amount_in_dot = *balance as f64 / PLANCKS_PER_DOT;
+                    update_lock_dates(&mut locked_intervals, current_block_date, end_datetime, locked_amount_in_dot);
+                }
+            }
                 }
             }
         }
+
+        // Now, after all class_locks have been processed, categorize and print the locks.
+        let mut categorized_amounts: HashMap<&'static str, (f64, DateTime<Utc>)> = HashMap::new();
+
+        for interval in &locked_intervals {
+            let category = categorize_lock_period(interval.end_date);
+            let entry = categorized_amounts
+                .entry(category)
+                .or_insert((0.0, Utc::now()));
+            if interval.amount > entry.0
+                || (f64::abs(interval.amount - entry.0) < f64::EPSILON
+                    && interval.end_date > entry.1)
+            {
+                *entry = (interval.amount, interval.end_date);
+            }
+        }
+
+        let lock_order = [
+            "Locked 0 Days",
+            "Locked 1-7 Days",
+            "Locked 8-14 Days",
+            "Locked 15-28 Days",
+            "Locked 29-60 Days",
+            "Locked 60+ Days",
+        ];
+        let mut max_lock_amount = 0.0;
+
+        for &lock_category in lock_order.iter().rev() {
+            if let Some(&(amount, end_date)) = categorized_amounts.get(lock_category) {
+                if amount > max_lock_amount {
+                    max_lock_amount = amount;
+                    println!(
+                        "{}: {:.10} DOT locked until {}",
+                        lock_category,
+                        amount,
+                        end_date.format("%Y-%m-%d %H:%M:%S").to_string()
+                    );
+                } else {
+                    println!("{}: none", lock_category);
+                }
+            } else {
+                println!("{}: none", lock_category);
+            }
+        }
     }
+    //for info in &referendums_with_details {
+    //      println!("{}", info);
+    //  }
 
     let locks_data = fetch_account_locks(api, &key).await?;
     let locks = locks_data.0.as_slice();
@@ -216,7 +231,7 @@ for &lock_category in lock_order.iter().rev() {
     for lock in locks {
         if let Ok(id_str) = String::from_utf8(lock.id.to_vec()) {
             let amount_in_dot = lock.amount as f64 / 1e10;
-        //    println!("Lock ID: {}, Amount: {:.10} DOT", id_str, amount_in_dot);
+            println!("Lock ID: {}, Amount: {:.10} DOT", id_str, amount_in_dot);
         } else {
             println!("Failed to convert lock id to string");
         }
@@ -314,7 +329,7 @@ async fn fetch_class_locks(
 
     match api.storage().at_latest().await?.fetch(&storage_query).await {
         Ok(Some(value)) => {
-            //    println!("[Class locks data] {:?}", value);
+                //println!("[Class locks data] {:?}", value);
             Ok(value)
         }
         Ok(None) => Err(Box::new(subxt::Error::Other(
@@ -376,7 +391,7 @@ async fn fetch_vesting(
 
     match api.storage().at_latest().await?.fetch(&storage_query).await {
         Ok(Some(value)) => {
-            //    println!("[Vesting Data] {:?}", value);
+            println!("[Vesting Data] {:?}", value);
             Ok(value)
         }
         Ok(None) => Err(Box::new(subxt::Error::Other(
@@ -431,9 +446,9 @@ async fn process_address(
     }
     //
     //    println!("[Vesting Balance] Fetching...");
-    //    if let Err(e) = fetch_and_print_vesting(&api, public_key_bytes.clone()).await {
-    //        eprintln!("[Error] Failed to fetch vesting balance: {}", e);
-    //    }
+    if let Err(e) = fetch_vesting(&api, &public_key_bytes).await {
+            eprintln!("[Error] Failed to fetch vesting balance: {}", e);
+        }
     //    if let Err(e) = fetch_class_locks(&api, public_key_bytes.clone()).await {
     //        eprintln!("[Error] Failed to fetch class locks: {}", e);
     //    }
