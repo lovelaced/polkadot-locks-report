@@ -108,7 +108,7 @@ async fn gather_and_cross_reference(
                 casting,
             ) = votes_data
             {
-                let mut referendums_with_details = vec![];
+                //let mut referendums_with_details = vec![];
 
                 for (ref_num, vote_detail) in casting.votes.0.as_slice().iter() {
                     let ref_data = fetch_referendum_info(api, key, *ref_num).await?;
@@ -164,7 +164,7 @@ async fn gather_and_cross_reference(
                 };
 
                     //println!("Block Number: {}", block_number); // Print block number here
-                    referendums_with_details.push(message);
+                    //referendums_with_details.push(message);
                     if let polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Ongoing(_) = &ref_data {
                 if let polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard { vote, balance } = vote_detail {
     let conviction = vote.0 % 128;
@@ -202,9 +202,9 @@ for &lock_category in lock_order.iter().rev() {
     }
 }
 }
-                    for info in &referendums_with_details {
-                        println!("{}", info);
-                    }
+                    //for info in &referendums_with_details {
+                  //      println!("{}", info);
+                  //  }
                 }
             }
         }
