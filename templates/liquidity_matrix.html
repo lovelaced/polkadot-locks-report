@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Polkadot Account Liquidity Matrix</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+        }
+
+        header {
+            padding: 20px;
+            text-align: center;
+            background-color: #004f78;
+            color: white;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: center;
+        }
+
+        th {
+            background-color: #f2f2f2;
+        }
+
+        tr:hover {
+            background-color: #f5f5f5;
+        }
+
+        .locked-0-days {
+            background-color: #FFC0CB; /* Light Pink */
+        }
+
+        .locked-1-7-days {
+            background-color: #FFA07A; /* Light Salmon */
+        }
+
+        .locked-8-14-days {
+            background-color: #FF8C00; /* Dark Orange */
+        }
+
+        .locked-15-28-days {
+            background-color: #FF6347; /* Tomato */
+        }
+
+        .locked-29-60-days {
+            background-color: #FF4500; /* Orange Red */
+        }
+
+        .locked-60-plus-days {
+            background-color: #FF0000; /* Red */
+        }
+
+        .none {
+            background-color: #FFFFFF; /* White */
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Polkadot Account Liquidity Matrix</h1>
+        <p>Generated on: {{date}}</p>
+    </header>
+    <table>
+        <thead>
+            <tr>
+                <th>Account</th>
+                <th>Locked 0 Days</th>
+                <th>Locked 1-7 Days</th>
+                <th>Locked 8-14 Days</th>
+                <th>Locked 15-28 Days</th>
+                <th>Locked 29-60 Days</th>
+                <th>Locked 60+ Days</th>
+            </tr>
+        </thead>
+        <tbody>
+{{#each accounts}}
+    <tr>
+        <td>{{this.address}}</td>
+        {{#each this.data.liquidity.locks}} <!-- Corrected the path -->
+            <td class="{{this.class}}">{{this.amount}}</td>
+        {{/each}}
+    </tr>
+{{/each}}
+        </tbody>
+    </table>
+</body>
+</html>
+

@@ -1,7 +1,10 @@
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Utc};
+use handlebars::Handlebars;
+use handlebars::JsonValue;
+use serde_json::json;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Cursor, Write};
 use std::str::FromStr;
 use subxt::utils;
 use subxt::{Error, OnlineClient, PolkadotConfig};
@@ -92,19 +95,29 @@ fn update_lock_dates(
 async fn gather_and_cross_reference(
     api: &OnlineClient<PolkadotConfig>,
     key: &utils::AccountId32,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let class_locks_data = fetch_class_locks(api, key).await?;
-    let class_locks = class_locks_data.0.as_slice();
+) -> Result<JsonValue, Box<dyn std::error::Error>> {
+    // Initialize default values
+    let mut liquidity_data = json!({});
+    let mut locked_intervals = Vec::new();
 
-    let current_block_number = fetch_current_block_number(api).await?;
-    let mut locked_intervals =
-        process_class_locks(api, key, class_locks, current_block_number).await?;
+    // Try fetching class locks and process them if available
+    if let Some(class_locks_data) = fetch_class_locks(api, key).await? {
+        let class_locks = class_locks_data.0.as_slice();
 
-    display_liquidity_ladder(&locked_intervals);
-    display_lock_totals(api, key).await?;
-    display_vesting_info(api, key).await?;
+        let current_block_number = fetch_current_block_number(api).await?;
+        locked_intervals = process_class_locks(api, key, class_locks, current_block_number).await?;
+        liquidity_data = display_liquidity_ladder(&locked_intervals)?;
+    }
 
-    Ok(())
+    let lock_totals_data = display_lock_totals(api, key).await?;
+    let vesting_data = display_vesting_info(api, key).await?;
+
+    // Combine data and return
+    Ok(json!({
+        "liquidity": liquidity_data,
+        "locks": lock_totals_data,
+        "vesting": vesting_data,
+    }))
 }
 
 async fn fetch_current_block_number(
@@ -132,8 +145,9 @@ async fn process_class_locks(
     for class_lock in class_locks {
         let votes_data = fetch_voting(api, key, class_lock.0).await?;
 
-        if let polkadot::runtime_types::pallet_conviction_voting::vote::Voting::Casting(casting) =
-            votes_data
+        if let Some(polkadot::runtime_types::pallet_conviction_voting::vote::Voting::Casting(
+            casting,
+        )) = votes_data
         {
             process_casting_votes(
                 api,
@@ -159,31 +173,34 @@ async fn process_casting_votes(
     for (ref_num, vote_detail) in casting.votes.0.as_slice().iter() {
         let ref_data = fetch_referendum_info(api, key, *ref_num).await?;
 
-        let block_number = match &ref_data {
-            polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Ongoing(status) => {
-                status.submitted
-            }
-            polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Approved(
-                block_number,
-                ..,
-            ) => *block_number,
-            polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Rejected(
-                block_number,
-                ..,
-            ) => *block_number,
-            polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Killed(
-                block_number,
-                ..,
-            ) => *block_number,
-            polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Cancelled(
-                block_number,
-                ..,
-            ) => *block_number,
-            polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::TimedOut(
-                block_number,
-                ..,
-            ) => *block_number,
-            _ => 0,
+        let block_number = match ref_data {
+            Some(data) => match data {
+                polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Ongoing(
+                    status,
+                ) => status.submitted,
+                polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Approved(
+                    block_number,
+                    ..,
+                ) => block_number,
+                polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Rejected(
+                    block_number,
+                    ..,
+                ) => block_number,
+                polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Killed(
+                    block_number,
+                    ..,
+                ) => block_number,
+                polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::Cancelled(
+                    block_number,
+                    ..,
+                ) => block_number,
+                polkadot::runtime_types::pallet_referenda::types::ReferendumInfo::TimedOut(
+                    block_number,
+                    ..,
+                ) => block_number,
+                _ => 0, // For other `ReferendumInfo` variants, if there are any
+            },
+            None => 0, // Handle the case where ref_data is None
         };
 
         if block_number != 0 {
@@ -212,7 +229,9 @@ fn categorize_lock_period(end_date: DateTime<Utc>) -> &'static str {
     }
 }
 
-fn display_liquidity_ladder(locked_intervals: &[LockedInterval]) {
+fn display_liquidity_ladder(
+    locked_intervals: &[LockedInterval],
+) -> Result<JsonValue, Box<dyn std::error::Error>> {
     let mut categorized_amounts: HashMap<&'static str, (f64, DateTime<Utc>)> = HashMap::new();
 
     for interval in locked_intervals {
@@ -234,54 +253,91 @@ fn display_liquidity_ladder(locked_intervals: &[LockedInterval]) {
         "Locked 29-60 Days",
         "Locked 60+ Days",
     ];
-    let mut max_lock_amount = 0.0;
 
-    println!("Liquidity Ladder:");
+    let mut max_lock_amount = 0.0;
+    let mut account_data = vec![];
+
+    // Gather data to be passed to the template
     for &lock_category in lock_order.iter().rev() {
-        categorized_amounts.get(lock_category).map_or_else(
-            || println!("{}: none", lock_category),
-            |&(amount, end_date)| {
-                if amount > max_lock_amount {
-                    max_lock_amount = amount;
-                    println!(
-                        "{}: {:.10} DOT locked until {}",
-                        lock_category,
-                        amount,
-                        end_date.format("%Y-%m-%d %H:%M:%S")
-                    );
-                } else {
-                    println!("{}: none", lock_category);
-                }
-            },
-        );
+        if let Some(&(amount, _)) = categorized_amounts.get(lock_category) {
+            if amount > max_lock_amount {
+                max_lock_amount = amount;
+            }
+
+            let class = match lock_category {
+                "Locked 0 Days" => "locked-0-days",
+                "Locked 1-7 Days" => "locked-1-7-days",
+                "Locked 8-14 Days" => "locked-8-14-days",
+                "Locked 15-28 Days" => "locked-15-28-days",
+                "Locked 29-60 Days" => "locked-29-60-days",
+                _ => "locked-60-plus-days",
+            };
+            account_data.push(json!({
+                "lock_category": lock_category,
+                "amount": format!("{:.10}", amount),
+                "class": class.to_string(),
+            }));
+        } else {
+            account_data.push(json!({
+                "lock_category": lock_category,
+                "amount": "none",
+                "class": "none",
+            }));
+        }
     }
+    let account_data_for_address = json!({
+        "locks": account_data,
+    });
+
+    Ok(account_data_for_address)
+}
+
+fn generate_html_for_all_addresses(
+    all_addresses_data: &JsonValue,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let reg = Handlebars::new();
+    let template_string = include_str!("../templates/liquidity_matrix.html");
+
+    let mut cursor = Cursor::new(Vec::new());
+    reg.render_template_to_write(&template_string, &all_addresses_data, &mut cursor)?;
+
+    let rendered_html = String::from_utf8(cursor.into_inner())?;
+
+    let mut file = File::create("liquidity_matrix_all_addresses.html")?;
+    file.write_all(rendered_html.as_bytes())?;
+
+    println!("Generated heatmap at liquidity_matrix_all_addresses.html");
+    Ok(())
 }
 
 async fn display_lock_totals(
     api: &OnlineClient<PolkadotConfig>,
     key: &utils::AccountId32,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let locks_data = fetch_account_locks(api, key).await?;
-    let locks = locks_data.0.as_slice();
+    if let Some(locks_data) = fetch_account_locks(api, key).await? {
+        let locks = locks_data.0.as_slice();
 
-    println!("Lock totals:");
-    for lock in locks {
-        if let Ok(id_str) = String::from_utf8(lock.id.to_vec()) {
-            let amount_in_dot = lock.amount as f64 / 1e10;
-            println!("Lock ID: {}, Amount: {:.10} DOT", id_str, amount_in_dot);
-        } else {
-            println!("Failed to convert lock id to string");
+        println!("Lock totals:");
+        for lock in locks {
+            if let Ok(id_str) = String::from_utf8(lock.id.to_vec()) {
+                let amount_in_dot = lock.amount as f64 / 1e10;
+                println!("Lock ID: {}, Amount: {:.10} DOT", id_str, amount_in_dot);
+            } else {
+                println!("Failed to convert lock id to string");
+            }
         }
     }
 
     Ok(())
 }
-
+/*
 async fn gather_detailed_vote_info(
     api: &OnlineClient<PolkadotConfig>,
     key: &utils::AccountId32,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let class_locks_data = fetch_class_locks(api, key).await?;
+
+let class_locks_opt = fetch_class_locks(api, key).await?;
+if let Some(class_locks_data) = class_locks_opt {
     let class_locks = class_locks_data.0.as_slice();
 
     for class_lock in class_locks {
@@ -372,25 +428,27 @@ async fn gather_detailed_vote_info(
                 println!("{}", info);
             }
         }
+}
     }
 
     Ok(())
 }
-
+*/
 async fn fetch_account_balance(
     api: &OnlineClient<PolkadotConfig>,
     key: &utils::AccountId32,
-) -> Result<polkadot::runtime_types::pallet_balances::types::AccountData<u128>, Box<subxt::Error>> {
+) -> Result<
+    Option<polkadot::runtime_types::pallet_balances::types::AccountData<u128>>,
+    Box<subxt::Error>,
+> {
     let storage_query = polkadot::storage().balances().account(key);
 
     match api.storage().at_latest().await?.fetch(&storage_query).await {
         Ok(Some(value)) => {
             println!("[balances.account] {:?}", value);
-            Ok(value)
+            Ok(Some(value))
         }
-        Ok(None) => Err(Box::new(subxt::Error::Other(
-            "[balances] Not found for account".to_string(),
-        ))),
+        Ok(None) => Ok(None),
         Err(e) => {
             eprintln!("[Error] Fetching failed for account balance: {}", e);
             Err(Box::new(e))
@@ -402,8 +460,10 @@ async fn fetch_account_locks(
     api: &OnlineClient<PolkadotConfig>,
     key: &utils::AccountId32,
 ) -> Result<
-    polkadot::runtime_types::bounded_collections::weak_bounded_vec::WeakBoundedVec<
-        polkadot::runtime_types::pallet_balances::types::BalanceLock<u128>,
+    Option<
+        polkadot::runtime_types::bounded_collections::weak_bounded_vec::WeakBoundedVec<
+            polkadot::runtime_types::pallet_balances::types::BalanceLock<u128>,
+        >,
     >,
     Box<subxt::Error>,
 > {
@@ -412,11 +472,9 @@ async fn fetch_account_locks(
     match api.storage().at_latest().await?.fetch(&storage_query).await {
         Ok(Some(value)) => {
             //    println!("[balances.lock] {:?}", value);
-            Ok(value)
+            Ok(Some(value))
         }
-        Ok(None) => Err(Box::new(subxt::Error::Other(
-            "[balances] Not found for address in conviction votes".to_string(),
-        ))),
+        Ok(None) => Ok(None),
         Err(e) => {
             eprintln!("[Error] Fetching failed for conviction votes: {}", e);
             Err(Box::new(e))
@@ -429,11 +487,13 @@ async fn fetch_voting(
     key: &utils::AccountId32,
     lock_class: u16,
 ) -> Result<
-    polkadot::runtime_types::pallet_conviction_voting::vote::Voting<
-        u128,
-        utils::AccountId32,
-        u32,
-        u32,
+    Option<
+        polkadot::runtime_types::pallet_conviction_voting::vote::Voting<
+            u128,
+            utils::AccountId32,
+            u32,
+            u32,
+        >,
     >,
     Box<subxt::Error>,
 > {
@@ -444,11 +504,9 @@ async fn fetch_voting(
     match api.storage().at_latest().await?.fetch(&storage_query).await {
         Ok(Some(value)) => {
             //println!("[conviction_voting.voting_for] {:?}", value);
-            Ok(value)
+            Ok(Some(value))
         }
-        Ok(None) => Err(Box::new(subxt::Error::Other(
-            "[voting] Not found for address in conviction votes".to_string(),
-        ))),
+        Ok(None) => Ok(None),
         Err(e) => {
             eprintln!("[Error] Fetching failed for conviction votes: {}", e);
             Err(Box::new(e))
@@ -460,7 +518,7 @@ async fn fetch_class_locks(
     api: &OnlineClient<PolkadotConfig>,
     key: &utils::AccountId32,
 ) -> Result<
-    polkadot::runtime_types::bounded_collections::bounded_vec::BoundedVec<(u16, u128)>,
+    Option<polkadot::runtime_types::bounded_collections::bounded_vec::BoundedVec<(u16, u128)>>,
     Box<subxt::Error>,
 > {
     let storage_query = polkadot::storage().conviction_voting().class_locks_for(key);
@@ -468,11 +526,9 @@ async fn fetch_class_locks(
     match api.storage().at_latest().await?.fetch(&storage_query).await {
         Ok(Some(value)) => {
             //println!("[Class locks data] {:?}", value);
-            Ok(value)
+            Ok(Some(value))
         }
-        Ok(None) => Err(Box::new(subxt::Error::Other(
-            "[voting] Not found for address in class locks".to_string(),
-        ))),
+        Ok(None) => Ok(None),
         Err(e) => {
             eprintln!("[Error] Fetching failed for class locks: {}", e);
             Err(Box::new(e))
@@ -485,17 +541,19 @@ async fn fetch_referendum_info(
     key: &utils::AccountId32,
     ref_num: u32,
 ) -> Result<
-    polkadot::runtime_types::pallet_referenda::types::ReferendumInfo<
-        u16,
-        polkadot::runtime_types::polkadot_runtime::OriginCaller,
-        u32,
-        polkadot::runtime_types::frame_support::traits::preimages::Bounded<
-            polkadot::runtime_types::polkadot_runtime::RuntimeCall,
+    Option<
+        polkadot::runtime_types::pallet_referenda::types::ReferendumInfo<
+            u16,
+            polkadot::runtime_types::polkadot_runtime::OriginCaller,
+            u32,
+            polkadot::runtime_types::frame_support::traits::preimages::Bounded<
+                polkadot::runtime_types::polkadot_runtime::RuntimeCall,
+            >,
+            u128,
+            polkadot::runtime_types::pallet_conviction_voting::types::Tally<u128>,
+            utils::AccountId32,
+            (u32, u32),
         >,
-        u128,
-        polkadot::runtime_types::pallet_conviction_voting::types::Tally<u128>,
-        utils::AccountId32,
-        (u32, u32),
     >,
     Box<subxt::Error>,
 > {
@@ -504,11 +562,9 @@ async fn fetch_referendum_info(
     match api.storage().at_latest().await?.fetch(&storage_query).await {
         Ok(Some(value)) => {
             //    println!("[Referendum Data] {:?}", value);
-            Ok(value)
+            Ok(Some(value))
         }
-        Ok(None) => Err(Box::new(subxt::Error::Other(
-            "[referenda] Not found in referenda".to_string(),
-        ))),
+        Ok(None) => Ok(None),
         Err(e) => {
             eprintln!("[Error] Fetching failed for referenda: {}", e);
             Err(Box::new(e))
@@ -520,8 +576,10 @@ async fn fetch_vesting(
     api: &OnlineClient<PolkadotConfig>,
     key: &utils::AccountId32,
 ) -> Result<
-    polkadot::runtime_types::bounded_collections::bounded_vec::BoundedVec<
-        polkadot::runtime_types::pallet_vesting::vesting_info::VestingInfo<u128, u32>,
+    Option<
+        polkadot::runtime_types::bounded_collections::bounded_vec::BoundedVec<
+            polkadot::runtime_types::pallet_vesting::vesting_info::VestingInfo<u128, u32>,
+        >,
     >,
     Box<subxt::Error>,
 > {
@@ -530,11 +588,12 @@ async fn fetch_vesting(
     match api.storage().at_latest().await?.fetch(&storage_query).await {
         Ok(Some(value)) => {
             //println!("[Vesting Data] {:?}", value);
-            Ok(value)
+            Ok(Some(value))
         }
-        Ok(None) => Err(Box::new(subxt::Error::Other(
-            "[vesting] Not found in vesting".to_string(),
-        ))),
+        Ok(None) => {
+            // If no vesting data is found, simply return None instead of an error
+            Ok(None)
+        }
         Err(e) => {
             eprintln!("[Error] Fetching failed for vesting: {}", e);
             Err(Box::new(e))
@@ -572,41 +631,46 @@ async fn display_vesting_info(
     api: &OnlineClient<PolkadotConfig>,
     key: &utils::AccountId32,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let vesting_data = fetch_vesting(api, key).await?;
+    let vesting_data_opt = fetch_vesting(api, key).await?;
 
-    let mut blocks_sub = api.blocks().subscribe_finalized().await?;
+    // If there's no vesting data, exit early
+    if let Some(vesting_data) = vesting_data_opt {
+        let mut blocks_sub = api.blocks().subscribe_finalized().await?;
 
-    match blocks_sub.next().await {
-        Some(block) => {
-            let block = block?;
-            let current_block_number = block.header().number;
+        match blocks_sub.next().await {
+            Some(block) => {
+                let block = block?;
+                let current_block_number = block.header().number;
 
-            println!("Detailed Vesting Schedule:");
+                println!("Detailed Vesting Schedule:");
 
-            for vesting_info in vesting_data.0.iter() {
-                let total_blocks_until_vested =
-                    vesting_info.locked / vesting_info.per_block as u128;
-                let (start_date, end_date) = calculate_vesting_datetimes(
-                    vesting_info.starting_block,
-                    total_blocks_until_vested as u32,
-                    current_block_number,
-                );
+                for vesting_info in vesting_data.0.iter() {
+                    let total_blocks_until_vested =
+                        vesting_info.locked / vesting_info.per_block as u128;
+                    let (start_date, end_date) = calculate_vesting_datetimes(
+                        vesting_info.starting_block,
+                        total_blocks_until_vested as u32,
+                        current_block_number,
+                    );
 
-                let locked_in_dot = vesting_info.locked as f64 / PLANCKS_PER_DOT;
-                let per_block_in_dot = vesting_info.per_block as f64 / PLANCKS_PER_DOT;
+                    let locked_in_dot = vesting_info.locked as f64 / PLANCKS_PER_DOT;
+                    let per_block_in_dot = vesting_info.per_block as f64 / PLANCKS_PER_DOT;
 
-                println!(
-                    "Start Date: {}, Locked: {:.10} DOT, Per Block: {:.10} DOT, End Date: {}",
-                    start_date.format("%Y-%m-%d %H:%M:%S"),
-                    locked_in_dot,
-                    per_block_in_dot,
-                    end_date.format("%Y-%m-%d %H:%M:%S")
-                );
+                    println!(
+                        "Start Date: {}, Locked: {:.10} DOT, Per Block: {:.10} DOT, End Date: {}",
+                        start_date.format("%Y-%m-%d %H:%M:%S"),
+                        locked_in_dot,
+                        per_block_in_dot,
+                        end_date.format("%Y-%m-%d %H:%M:%S")
+                    );
+                }
+            }
+            None => {
+                println!("No block data available.");
             }
         }
-        None => {
-            println!("No block data available.");
-        }
+    } else {
+        println!("No vesting data available for the account.");
     }
 
     Ok(())
@@ -617,9 +681,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api = connect_to_polkadot_node().await?;
     let addresses = read_addresses_from_file("addresses.txt")?;
 
+    let mut all_data = json!({
+        "date": Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        "accounts": []
+    });
+
     for address in &addresses {
-        process_address(&api, &address).await?;
+        let data = process_address(&api, address).await?;
+        all_data["accounts"].as_array_mut().unwrap().push(data);
     }
+    // Before calling the template rendering function
+    println!("{:#?}", all_data); // Pretty-print the data for inspection
+
+    generate_html_for_all_addresses(&all_data)?;
 
     println!("\n[Completion] Finished processing all addresses.");
     Ok(())
@@ -643,17 +717,20 @@ fn read_addresses_from_file(path: &str) -> Result<Vec<String>, Box<dyn std::erro
 async fn process_address(
     api: &OnlineClient<PolkadotConfig>,
     address: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<JsonValue, Box<dyn std::error::Error>> {
     println!("\n[Processing] Address: {}", address);
     let public_key_bytes = utils::AccountId32::from_str(address)?;
+
     if let Err(e) = fetch_account_balance(&api, &public_key_bytes).await {
         eprintln!("[Error] Failed to fetch balance: {}", e);
     }
     if let Err(e) = fetch_account_locks(&api, &public_key_bytes).await {
         eprintln!("[Error] Failed to fetch locked balance: {}", e);
     }
-    if let Err(e) = gather_and_cross_reference(&api, &public_key_bytes).await {
-        eprintln!("[Error] Failed to xr: {}", e);
-    }
-    Ok(())
+    let xr_data = gather_and_cross_reference(&api, &public_key_bytes).await?;
+
+    Ok(json!({
+        "address": address,
+        "data": xr_data,
+    }))
 }
