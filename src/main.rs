@@ -8,6 +8,8 @@ use std::io::{BufRead, BufReader, Cursor, Write};
 use std::str::FromStr;
 use subxt::utils;
 use subxt::{Error, OnlineClient, PolkadotConfig};
+use std::process::Command;
+
 
 #[subxt::subxt(runtime_metadata_path = "./artifacts/polkadot_metadata_small.scale")]
 pub mod polkadot {}
@@ -315,6 +317,8 @@ fn generate_html_for_all_addresses(
     file.write_all(rendered_html.as_bytes())?;
 
     println!("Generated heatmap at liquidity_matrix_all_addresses.html");
+    Command::new("open").arg("liquidity_matrix_all_addresses.html").status()?;
+
     Ok(())
 }
 
