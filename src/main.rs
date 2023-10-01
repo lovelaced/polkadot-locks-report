@@ -237,6 +237,10 @@ fn display_liquidity_ladder(
     for interval in locked_intervals {
         let category = categorize_lock_period(interval.end_date);
         let entry = categorized_amounts.entry(category).or_default();
+        println!(
+            "Interval amount: {:.10}, End date: {}, Category: {}",
+            interval.amount, interval.end_date, category
+        );
 
         if interval.amount > entry.0
             || (f64::abs(interval.amount - entry.0) < f64::EPSILON && interval.end_date > entry.1)
@@ -272,6 +276,10 @@ fn display_liquidity_ladder(
                 "Locked 29-60 Days" => "locked-29-60-days",
                 _ => "locked-60-plus-days",
             };
+            println!(
+                "Lock Category: {}, Amount: {:.10}, Class: {}",
+                lock_category, amount, class
+            );
             account_data.push(json!({
                 "lock_category": lock_category,
                 "amount": format!("{:.10}", amount),
@@ -690,9 +698,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let data = process_address(&api, address).await?;
         all_data["accounts"].as_array_mut().unwrap().push(data);
     }
-    // Before calling the template rendering function
-    println!("{:#?}", all_data); // Pretty-print the data for inspection
-
     generate_html_for_all_addresses(&all_data)?;
 
     println!("\n[Completion] Finished processing all addresses.");
