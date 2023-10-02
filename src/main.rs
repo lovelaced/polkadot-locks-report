@@ -5,11 +5,10 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Write};
+use std::process::Command;
 use std::str::FromStr;
 use subxt::utils;
 use subxt::{Error, OnlineClient, PolkadotConfig};
-use std::process::Command;
-
 
 #[subxt::subxt(runtime_metadata_path = "./artifacts/polkadot_metadata_small.scale")]
 pub mod polkadot {}
@@ -317,7 +316,9 @@ fn generate_html_for_all_addresses(
     file.write_all(rendered_html.as_bytes())?;
 
     println!("Generated heatmap at liquidity_matrix_all_addresses.html");
-    Command::new("open").arg("liquidity_matrix_all_addresses.html").status()?;
+    Command::new("open")
+        .arg("liquidity_matrix_all_addresses.html")
+        .status()?;
 
     Ok(())
 }
@@ -691,8 +692,18 @@ async fn display_vesting_info(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api = connect_to_polkadot_node().await?;
-    let addresses = read_addresses_from_file("addresses.txt")?;
-
+    let addresses = match read_addresses_from_input() {
+        Ok(addrs) => {
+            for address in &addrs {
+                println!("{}", address);
+            }
+            addrs
+        }
+        Err(e) => {
+            println!("Error: {}", e);
+            return Err(e.into());
+        }
+    };
     let mut all_data = json!({
         "date": Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
         "accounts": []
@@ -722,7 +733,23 @@ fn read_addresses_from_file(path: &str) -> Result<Vec<String>, Box<dyn std::erro
         .collect::<Result<_, _>>()
         .map_err(Into::into)
 }
+fn read_addresses_from_input() -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let apple_script = r#"
+    set userInput to text returned of (display dialog "Please input addresses, separated by newlines:" default answer "")
+    return userInput
+    "#;
 
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(apple_script)
+        .output()?;
+
+    let user_input = String::from_utf8(output.stdout)?;
+
+    // Split the input by newline and collect into a Vec<String>
+    let addresses = user_input.lines().map(|s| s.to_string()).collect();
+    Ok(addresses)
+}
 async fn process_address(
     api: &OnlineClient<PolkadotConfig>,
     address: &str,
