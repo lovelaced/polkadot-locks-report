@@ -733,9 +733,20 @@ fn read_addresses_from_file(path: &str) -> Result<Vec<String>, Box<dyn std::erro
         .collect::<Result<_, _>>()
         .map_err(Into::into)
 }
+
 fn read_addresses_from_input() -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let apple_script = r#"
-    set userInput to text returned of (display dialog "Please input addresses, separated by newlines:" default answer "")
+    set defaultText to "
+
+
+
+
+
+
+
+
+    "
+    set userInput to text returned of (display dialog "Please input addresses, separated by newlines:" default answer defaultText)
     return userInput
     "#;
 
@@ -746,8 +757,8 @@ fn read_addresses_from_input() -> Result<Vec<String>, Box<dyn std::error::Error>
 
     let user_input = String::from_utf8(output.stdout)?;
 
-    // Split the input by newline and collect into a Vec<String>
-    let addresses = user_input.lines().map(|s| s.to_string()).collect();
+    // Split the input by newline, filter out any empty lines, and collect into a Vec<String>
+    let addresses = user_input.lines().filter(|s| !s.trim().is_empty()).map(|s| s.to_string()).collect();
     Ok(addresses)
 }
 async fn process_address(
