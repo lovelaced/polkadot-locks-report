@@ -2,6 +2,8 @@
 
 This program generates an HTML report of locks given a list of accounts, as well as having the capability of retrieving and printing detailed data on locks, referenda, voting, and vesting. It focuses on analyzing and processing voting data, referenda information, and account lock periods to generate a detailed report of active and expired locks.
 
+![Screenshot 2023-11-03 at 14.58.31.png](https://github.com/lovelaced/polkadot-locks-report/blob/5934c404ae646de22fb8281d0e1688375b8ebc12/Screenshot%202023-11-03%20at%2014.58.31.png)
+
 ## Features
 
 - Calculating lock periods based on vote conviction, staking, and vesting.
