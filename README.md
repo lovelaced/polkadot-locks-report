@@ -2,6 +2,8 @@
 
 This program generates an HTML report of locks given a list of accounts, as well as having the capability of retrieving and printing detailed data on locks, referenda, voting, and vesting. It focuses on analyzing and processing voting data, referenda information, and account lock periods to generate a detailed report of active and expired locks.
 
+![screenshot](Screenshot 2023-11-03 at 14.58.31.png)
+
 ## Features
 
 - Calculating lock periods based on vote conviction, staking, and vesting.
