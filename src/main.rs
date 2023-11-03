@@ -9,6 +9,7 @@ use std::process::Command;
 use std::str::FromStr;
 use subxt::utils;
 use subxt::{Error, OnlineClient, PolkadotConfig};
+use chrono::prelude::*;
 
 #[subxt::subxt(runtime_metadata_path = "./artifacts/polkadot_metadata_small.scale")]
 pub mod polkadot {}
@@ -302,7 +303,7 @@ fn display_liquidity_ladder(
 }
 
 fn generate_html_for_all_addresses(
-    all_addresses_data: &JsonValue,
+    all_addresses_data: &serde_json::Value,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let reg = Handlebars::new();
     let template_string = include_str!("../templates/liquidity_matrix.html");
@@ -312,12 +313,19 @@ fn generate_html_for_all_addresses(
 
     let rendered_html = String::from_utf8(cursor.into_inner())?;
 
-    let mut file = File::create("liquidity_matrix_all_addresses.html")?;
+    // Generate current date and time string
+    let local: DateTime<Local> = Local::now();
+    let timestamp_str = local.format("%Y-%m-%d_%H-%M-%S").to_string();
+
+    // Create a filename with the current date and time
+    let filename = format!("liquidity_matrix_all_addresses_{}.html", timestamp_str);
+
+    let mut file = File::create(&filename)?;
     file.write_all(rendered_html.as_bytes())?;
 
-    println!("Generated heatmap at liquidity_matrix_all_addresses.html");
+    println!("Generated heatmap at {}", filename);
     Command::new("open")
-        .arg("liquidity_matrix_all_addresses.html")
+        .arg(&filename)
         .status()?;
 
     Ok(())
